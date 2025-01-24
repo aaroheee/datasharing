@@ -1,0 +1,2704 @@
+### ------------------------------------------------------------------------ ###
+### CDAM Watchtower: Compliance Sentinel Dashboard
+### Programmer: Arohi Parlikar
+### ------------------------------------------------------------------------ ###
+
+library(data.table)
+library(dplyr)
+library(readxl)
+library(stringr)
+library(tidyr)
+library(tidyverse)
+library(kableExtra)
+library(shiny)
+library(shinydashboard)
+library(shinyWidgets)
+library(shinyjs)
+library(plotly)
+library(ggplot2)
+library(sodium)
+library(fontawesome)
+library(xlsx)
+library(openxlsx)
+library(DT)
+library(lubridate)
+library(RColorBrewer)
+library(ggthemes)
+library(rhandsontable)
+
+# Function for Compliance Report -----------------------------------------------
+pathwd = "/funstorage/renv/CDAMWatchtower"
+source(paste0(pathwd,"/funcCompliance.R"))
+
+
+# Login screen -----------------------------------------------------------------
+loginpage <- div(
+  id = "loginpage", style = "width: 500px; max-width: 100%; margin: 0 auto; padding: 20px;",
+  wellPanel(
+    tags$h2("Dashboard Login", class = "text-center", style = "padding-top: 0;color:#333; font-weight:600;"),
+    textInput("userName", placeholder = "Username", label = tagList(icon("user"), "Novartis 521 ID")),
+    passwordInput("passwd", placeholder = "Password", label = tagList(icon("unlock-alt"), "Password")),
+    br(),
+    div(
+      style = "text-align: center;",
+      actionButton("login", "Sign In", style = "color: white; background-color:#5f3fa1;
+                                 padding: 10px 15px; width: 150px; cursor: pointer;
+                                 font-size: 18px; font-weight: 600;"),
+      shinyjs::hidden(
+        div(
+          id = "nomatch",
+          tags$p("Oops! Incorrect username or password!",
+            style = "color: red; font-weight: 600;
+                                            padding-top: 5px;font-size:16px;",
+            class = "text-center"
+          )
+        )
+      ),
+      br(),
+      br()
+    )
+  )
+)
+
+# Header -----------------------------------------------------------------------
+header <- dashboardHeader(title = "CDAM Watchtower")
+
+
+# Side Bar ---------------------------------------------------------------------
+sidebar <- dashboardSidebar( # Custom CSS to hide the default logout panel
+  tags$head(tags$style(HTML(".shiny-server-account { display: none; }"))),
+
+  # The dynamically-generated user panel
+  uiOutput("userpanel"),
+  uiOutput("sidebarpanel")
+)
+
+# Body -------------------------------------------------------------------------
+body <- dashboardBody(shinyjs::useShinyjs(), uiOutput("body"))
+
+# UI ---------------------------------------------------------------------------
+ui <- dashboardPage(header, sidebar, body, skin = "purple")
+
+# Server -----------------------------------------------------------------------
+server <- function(input, output, session) {
+  ## Access Repository
+  userCredpath <- paste0(pathwd,"/userCred.csv")
+  credentials <- read.csv(userCredpath, header = TRUE)
+
+  ## Login ---------------------------------------------------------------------
+  login <- FALSE
+  USER <- reactiveValues(login = login)
+
+  observe({
+    if (USER$login == FALSE) {
+      if (!is.null(input$login)) {
+        if (input$login > 0) {
+          Username <- isolate(input$userName)
+          Password <- isolate(input$passwd)
+          if (length(which(credentials$username_id == Username)) == 1) {
+            pasmatch <- credentials["passod"][which(credentials$username_id == Username), ]
+            pasverify <- password_verify(pasmatch, Password)
+            if (pasverify) {
+              USER$login <- TRUE
+            } else {
+              shinyjs::toggle(id = "nomatch", anim = TRUE, time = 1, animType = "fade")
+              shinyjs::delay(3000, shinyjs::toggle(id = "nomatch", anim = TRUE, time = 1, animType = "fade"))
+            }
+          } else {
+            shinyjs::toggle(id = "nomatch", anim = TRUE, time = 1, animType = "fade")
+            shinyjs::delay(3000, shinyjs::toggle(id = "nomatch", anim = TRUE, time = 1, animType = "fade"))
+          }
+        }
+      }
+    }
+  })
+
+  ## User Panel ----------------------------------------------------------------
+  output$userpanel <- renderUI({
+    if (USER$login == TRUE) {
+      sidebarUserPanel(
+        span("Logged in as ", input$userName),
+        # Log Out
+        subtitle = a(icon("sign-out"), "Logout", href = "javascript:window.location.reload(true)")
+      )
+    }
+  })
+
+
+  ## Side Bar ------------------------------------------------------------------
+  output$sidebarpanel <- renderUI({
+    if (USER$login == TRUE) {
+      if (credentials[, "permission"][which(credentials$username_id == input$userName)] == "advanced") {
+        sidebarMenu(
+          menuItem("Summary", tabName = "summary", icon = icon("dashboard")),
+          menuItem("Study", tabName = "study", icon = icon("book")),
+          menuItem("Manager", tabName = "manager", icon = icon("user")),
+          menuItem("Credentials", tabName = "cred", icon = icon("eye")),
+          menuItem("Data Dock", tabName = "data", icon = icon("cloud-arrow-up")),
+          menuItem("About", tabName = "about", icon = icon("exclamation-circle")),
+          materialSwitch(
+            inputId = "switchHI",
+            label = "High Impact",
+            value = TRUE,
+            status = "success"
+          )
+        )
+      } else {
+        sidebarMenu(
+          menuItem("Summary", tabName = "summary", icon = icon("dashboard")),
+          menuItem("Study", tabName = "study", icon = icon("book")),
+          menuItem("About", tabName = "about", icon = icon("exclamation-circle")),
+          materialSwitch(
+            inputId = "switchHI",
+            label = "High Impact",
+            value = TRUE,
+            status = "success"
+          )
+        )
+      }
+    }
+  })
+
+  ## Output UI ----------------------------------------------------------------
+  output$body <- renderUI({
+    if (USER$login == TRUE) {
+      if (credentials[, "permission"][which(credentials$username_id == input$userName)] == "advanced") {
+        tabItems(
+          tabItem(
+            tabName = "summary", class = "active",
+            fluidRow(
+              tabBox(
+                id = "tabsum", width = 12, height = "1200px",
+                tabPanel(
+                  "Compliance Overview - Table",
+                  br(),
+                  tableOutput("summaryTable")),
+                tabPanel(
+                  "Compliance Overview - Plots",
+                  br(),
+                  tags$b(tags$span(style="color:#36adab; font-size:16px","Overall Report Compliance - Candy Plot")),
+                  plotlyOutput(outputId = "plotSumL", height = 400),
+                  tags$hr(),
+                  br(),
+                  tags$b(tags$span(style="color:#36adab; font-size:16px","Cluster-wise Report Compliance - Abbacus Plot")),
+                  plotlyOutput(outputId = "plotSumD", height = 550, width = "auto")
+                ),
+                tabPanel(
+                  "Compliance Trends",
+                  br(),
+                  selectInput(
+                    inputId = "trend",
+                    label = "Select Trend View",
+                    choices = c('Trend Summary 1','Trend Summary 2',unique(TrendData()$Category)),
+                    selected = "Trend Summary 1",
+                    multiple = FALSE
+                  ),
+                  tags$hr(), br(),
+                  uiOutput("trendPlots")
+                ),
+                tabPanel(
+                  "RAG Breakdown of Reports",
+                  br(),
+                  tags$b(tags$span(style="color:#36adab; font-size:16px","Filters")),
+                  br(),
+                  column(
+                    width = 5,
+                    # Aggregation
+                    radioGroupButtons(
+                      inputId = "time",
+                      label = "Time Granularity Selection",
+                      choices = c("Ongoing", "Month", "Quarter", "Year"),
+                      selected = "Ongoing",
+                      status = "success",
+                      direction = "horizontal",
+                      checkIcon = list(
+                        yes = icon("ok",
+                                   lib = "glyphicon"
+                        ),
+                        no = icon("remove",
+                                  lib = "glyphicon"
+                        )
+                      )
+                    )
+                  ),
+                  column(
+                    width = 4,
+                    # Clusters
+                    selectInput(
+                      inputId = "cluster",
+                      label = "Cluster",
+                      choices = unique(PlotData()$Cluster),
+                      multiple = TRUE
+                    ),
+                    # Theraputic Area
+                    selectInput(
+                      inputId = "ta",
+                      label = "TA",
+                      choices = unique(PlotData()$TA),
+                      multiple = TRUE
+                    )
+                  ),
+                  column(
+                    width = 3,
+                    selectInput(
+                      inputId = "dmGH",
+                      label = "Group Head (DM)",
+                      choices = unique(PlotData()$`DM GHs`),
+                      multiple = TRUE
+                    ),
+                    selectInput(
+                      inputId = "dmSGH",
+                      label = "Sr Group Head (DM)",
+                      choices = unique(PlotData()$`DM Sr GHs`),
+                      multiple = TRUE
+                    )
+                  ), br(),
+                  tags$hr(), br(),
+                  column(
+                    width = 12,
+                    plotlyOutput(outputId = "plotRAG", height = 700, width = 'auto')
+                  )
+                )
+                )
+              )
+           ),
+          tabItem(
+            tabName = "study",
+            fluidRow(
+              tabBox(
+                id = "tabstudy", width = 12, height = "1100px",
+                tabPanel(
+                  "Compliance Overview - Plots",
+                  br(),
+                  tags$b(tags$span(style="color:#36adab; font-size:16px","Study Compliance - Star Plot")),
+                  plotlyOutput(outputId = "studyCompliance", height = 400),
+                  tags$hr(),
+                  br(),
+                  tags$b(tags$span(style="color:#36adab; font-size:16px","Study RAG Compliance - Tile Plot")),
+                  plotlyOutput(outputId = "studyRAG", height = 500, width = "auto")
+                ),
+                tabPanel(
+                  "Compliance Overview - Table",
+                  br(),
+                  tableOutput("studyTable"))
+            )
+          )
+          ),
+          tabItem(
+            tabName = "manager",
+            fluidRow(
+              tabBox(
+                id = "tabmanager", width = 12, height = "1000px",
+                tabPanel(
+                  "Associate Compliance Overview - Table",
+                  br(),
+                  tableOutput("managerTable")),
+                tabPanel(
+                  "Associate Compliance - Plot",
+                  br(),
+                  tags$b(tags$span(style="color:#36adab; font-size:16px","Associate Compliance - Timesheet")),
+                  uiOutput("managerPlots")
+                )
+              )
+            )
+          ),
+          tabItem(
+            tabName = "cred",
+            fluidRow(
+              tags$br(),
+              dropdown(
+                textInput("username_id", "User Name", ""),
+                textInput("pass", "Password", ""),
+                pickerInput(inputId = "permission", label = "Permission", choices = c("basic", "advanced")),
+                actionButton("submit", "Submit"),
+                style = "unite",
+                icon = icon("plus"),
+                status = "danger",
+                size = "m",
+                label = "Add New User",
+                tooltip = TRUE,
+                animate = animateOptions(
+                  enter = animations$fading_entrances$fadeInLeftBig,
+                  exit = animations$fading_exits$fadeOutRightBig
+                )
+              ),
+              tags$hr(),
+              downloadButton("downloadData", "Download"),
+              actionButton("deleteRow", "Delete Row"),
+              tags$hr(),
+              column(width = 12, DT::dataTableOutput("credentials", width = "100%"))
+            )
+          ),
+          tabItem(
+            tabName = "data",
+            fluidRow(
+              tabBox(
+                id = "tabset", width = 12, height = "850px",
+                tabPanel(
+                  "CDAM Solutions",
+                  br(),
+                  h4("Status of CDAM Solutions"),
+                  tags$hr(),
+                  helpText("Right-click on the table to delete/insert rows.", 
+                     "Double-click on a cell to edit", "Click on Submit Modifications to save the changes."),
+                  br(),
+                  helpText("Note: The solution name provided in the Category column should match with the expected report category.","Report Unit to be stated as M (Month) or Q (Quarter).", "Active solutions must be checked in the Status checkbox."),
+                  tags$hr(),
+                  rHandsontableOutput("solTable"),
+                  tags$hr(),
+                  actionButton(
+                    inputId = "saveSol", label = "Submit Modifications",
+                    icon = icon("paper-plane"),
+                    style="color: #fff; background-color: #199091; border-color: #199091"
+                  )
+                ),
+                tabPanel(
+                  "Data Templates",
+                  br(),
+                  h4("Download Data Templates"),
+                  tags$hr(),
+                  pickerInput(
+                    inputId = "tempDown",
+                    choices = c("ReportData", "iBoW", "DTS", "IDR", "HCR"),
+                    options = list(title = "Nothing selected")
+                  ),
+                  br(),
+                  verbatimTextOutput("templateInfo"),
+                  tags$hr(),
+                  downloadBttn(
+                    outputId = "downloadTemp",
+                    style = "bordered",
+                    color = "royal"
+                  ),
+                  tags$hr()
+                ),
+                tabPanel(
+                  "Report Data",
+                  br(),
+                  fileInput("rawdata", "Choose Excel File", multiple = FALSE, accept = c(".xlsx")),
+                  br(),
+                  verbatimTextOutput("rawdataInfo"),
+                  tags$hr(),
+                  actionBttn("submitRaw", "Submit Data", icon = icon("play"), style = "jelly", color = "danger"),
+                  br(), br(),
+                  verbatimTextOutput("stat_text"),
+                  tags$hr(),
+                  DT::dataTableOutput("rawdataTable")
+                ),
+                tabPanel(
+                  "iBoW",
+                  br(),
+                  fileInput("ibowdata", "Choose Excel File", multiple = FALSE, accept = c(".xlsx")),
+                  tags$hr(),
+                  actionBttn("submitBow", "Submit Data", icon = icon("play"), style = "jelly", color = "danger"),
+                  br(), br(),
+                  verbatimTextOutput("stat_text2"),
+                  tags$hr(),
+                  DT::dataTableOutput("ibowdataTable")
+                ),
+                tabPanel(
+                  "DTS",
+                  br(),
+                  fileInput("dtsdata", "Choose Excel File", multiple = FALSE, accept = c(".xlsx")),
+                  tags$hr(),
+                  actionBttn("submitDTS", "Submit Data", icon = icon("play"), style = "jelly", color = "danger"),
+                  br(), br(),
+                  verbatimTextOutput("stat_text3"),
+                  tags$hr(),
+                  DT::dataTableOutput("dtsdataTable")
+                ),
+                tabPanel(
+                  "IDR",
+                  br(),
+                  fileInput("idrdata", "Choose Excel File", multiple = FALSE, accept = c(".xlsx")),
+                  tags$hr(),
+                  actionBttn("submitIDR", "Submit Data", icon = icon("play"), style = "jelly", color = "danger"),
+                  br(), br(),
+                  verbatimTextOutput("stat_text4"),
+                  tags$hr(),
+                  DT::dataTableOutput("idrdataTable")
+                ),
+                tabPanel(
+                  "HCR",
+                  br(),
+                  fileInput("hcrdata", "Choose Excel File", multiple = FALSE, accept = c(".xlsx")),
+                  tags$hr(),
+                  actionBttn("submitHCR", "Submit Data", icon = icon("play"), style = "jelly", color = "danger"),
+                  br(), br(),
+                  verbatimTextOutput("stat_text5"),
+                  tags$hr(),
+                  DT::dataTableOutput("hcrdataTable")
+                ),
+                tabPanel(
+                  "Upload Log",
+                  br(),
+                  h5("Track all your data submissions in one place."),
+                  tags$hr(),
+                  br(),
+                  DT::dataTableOutput("uploadTable"),
+                  tags$hr(),
+                  actionButton(
+                    inputId = "refresh", label = "Refresh Dashboard",
+                    icon = icon("yin-yang"), onclick = "window.location.reload(true)"
+                  ),
+                  tags$hr(),
+                  downloadBttn(
+                    outputId = "downloadAllData",
+                    label = "Download All Data",
+                    style = "pill",
+                    color = "success"
+                  )
+                )
+              )
+            )
+          )
+        )
+      } else {
+        tabItems(
+          tabItem(
+            tabName = "summary", class = "active",
+            fluidRow(
+              tabBox(
+                id = "tabsum", width = 12, height = "1200px",
+                tabPanel(
+                  "Compliance Overview - Table",
+                  br(),
+                  tableOutput("summaryTable")),
+                tabPanel(
+                  "Compliance Overview - Plots",
+                  br(),
+                  tags$b(tags$span(style="color:#36adab; font-size:16px","Overall Report Compliance - Candy Plot")),
+                  plotlyOutput(outputId = "plotSumL", height = 400),
+                  tags$hr(),
+                  br(),
+                  tags$b(tags$span(style="color:#36adab; font-size:16px","Cluster-wise Report Compliance - Abbacus Plot")),
+                  plotlyOutput(outputId = "plotSumD", height = 550, width = "auto")
+                ),
+                tabPanel(
+                  "Compliance Trends",
+                  br(),
+                  selectInput(
+                    inputId = "trend",
+                    label = "Select Trend View",
+                    choices = c('Trend Summary 1','Trend Summary 2',unique(TrendData()$Category)),
+                    selected = "Trend Summary 1",
+                    multiple = FALSE
+                  ),
+                  tags$hr(), br(),
+                  uiOutput("trendPlots")
+                ),
+                tabPanel(
+                  "RAG Breakdown of Reports",
+                  br(),
+                  tags$b(tags$span(style="color:#36adab; font-size:16px","Filters")),
+                  br(),
+                  column(
+                    width = 5,
+                    # Aggregation
+                    radioGroupButtons(
+                      inputId = "time",
+                      label = "Time Granularity Selection",
+                      choices = c("Ongoing", "Month", "Quarter", "Year"),
+                      selected = "Ongoing",
+                      status = "success",
+                      direction = "horizontal",
+                      checkIcon = list(
+                        yes = icon("ok",
+                                   lib = "glyphicon"
+                        ),
+                        no = icon("remove",
+                                  lib = "glyphicon"
+                        )
+                      )
+                    )
+                  ),
+                  column(
+                    width = 4,
+                    # Clusters
+                    selectInput(
+                      inputId = "cluster",
+                      label = "Cluster",
+                      choices = unique(PlotData()$Cluster),
+                      multiple = TRUE
+                    ),
+                    # Theraputic Area
+                    selectInput(
+                      inputId = "ta",
+                      label = "TA",
+                      choices = unique(PlotData()$TA),
+                      multiple = TRUE
+                    )
+                  ),
+                  column(
+                    width = 3,
+                    selectInput(
+                      inputId = "dmGH",
+                      label = "Group Head (DM)",
+                      choices = unique(PlotData()$`DM GHs`),
+                      multiple = TRUE
+                    ),
+                    selectInput(
+                      inputId = "dmSGH",
+                      label = "Sr Group Head (DM)",
+                      choices = unique(PlotData()$`DM Sr GHs`),
+                      multiple = TRUE
+                    )
+                  ), br(),
+                  tags$hr(), br(),
+                  column(
+                    width = 12,
+                    plotlyOutput(outputId = "plotRAG", height = 700, width = 'auto')
+                  )
+                )
+              )
+            )
+          ),
+          tabItem(
+            tabName = "study",
+            fluidRow(
+              tabBox(
+                id = "tabstudy", width = 12, height = "1100px",
+                tabPanel(
+                  "Compliance Overview - Plots",
+                  br(),
+                  tags$b(tags$span(style="color:#36adab; font-size:16px","Study Compliance - Star Plot")),
+                  plotlyOutput(outputId = "studyCompliance", height = 400),
+                  tags$hr(),
+                  br(),
+                  tags$b(tags$span(style="color:#36adab; font-size:16px","Study RAG Compliance - Tile Plot")),
+                  plotlyOutput(outputId = "studyRAG", height = 500, width = "auto")
+                ),
+                tabPanel(
+                  "Compliance Overview - Table",
+                  br(),
+                  tableOutput("studyTable"))
+              )
+            )
+          )
+        )
+      }
+    } else {
+      loginpage
+    }
+  })
+
+  ## Data & Functions - Summary, Study, Manager ---------------------------------
+  User <- reactive({
+    if (USER$login == TRUE) {
+      toupper(input$userName)
+    }
+  })
+  allData <- reactive({
+    if (USER$login == TRUE) {
+      funcCompliance(User())
+    }
+  })
+
+  # Summary -------------------------------------------------------------------#
+  PlotData <- reactive({
+    if (isTRUE(input$switchHI)) {
+      allData()$ToPlot %>% filter(`High Impact` == "Yes")
+    } else {
+      allData()$ToPlot
+    }
+  })
+  
+  TrendData <- reactive({
+    if (isTRUE(input$switchHI)) {
+      allData()$TrendDataHI
+    } else {
+      allData()$TrendDataAll
+    }
+  })
+  
+  ## Compliance Overview - Table
+  output$summaryTable <- function() {
+    if (isTRUE(input$switchHI)) {
+      allData()$ColoredSummaryHI
+    } else {
+      allData()$ColoredSummaryAll
+    }
+  }
+  
+  ## Compliance Overview - Plot
+  makePlotlySum <- function(Data){
+    
+    Current_Trend <- Data %>% 
+      filter(Date == max(Date)) %>%
+      mutate(compFlag = if_else(CompliantPercent < TargetPercent, 'Non-Compliant','Compliant'),
+             compFlagC = if_else(ClusterRAGPercent < TargetPercent, 'Non-Compliant','Compliant'),
+             shortCluster = strtrim(Cluster,9))
+    
+    # Lollipop Plot
+    l <- ggplot(Current_Trend, aes(x=Category, y=CompliantPercent, colour=compFlag, label = CompliantPercent)) +
+      geom_segment(aes(x=Category, xend=Category, y=0, yend=CompliantPercent), color="grey") +
+      geom_point(size=5, alpha=0.7, shape=21, stroke=2, fill=alpha("lightblue", 0.3), aes(text = sprintf("Category: %s<br>Applicable Studies: %s<br>Compliant Studies: %s<br>Target Percent: %s", Category, ApplicableStudies, CompliantStudies, TargetPercent))) +
+      scale_color_manual(values = c('Non-Compliant'="#F46958",'Compliant'="#2DBBA7")) +
+      scale_y_continuous(labels = function(x) paste0(x, "%")) +
+      geom_text(check_overlap = TRUE, nudge_y = 6, size = 3) +
+      theme_light() +
+      coord_flip() +
+      theme(
+        panel.grid.major.y = element_blank(),
+        panel.border = element_blank(),
+        axis.ticks.y = element_blank()
+      ) +
+      labs(x = "",
+           y = "Compliance %",
+           color = "")
+    
+    # Dot Plot
+    d <- ggplot(Current_Trend, aes(shortCluster, ClusterRAGPercent, colour = compFlagC, label = ClusterRAGPercent)) +
+      geom_point(size=3, alpha=0.7, shape=23, stroke=2, fill=alpha("lightblue", 0.3), aes(text = sprintf("Category: %s<br>Cluster: %s<br>RAG Percent: %s<br>Target Percent: %s", Category,Cluster,ClusterRAGPercent, TargetPercent))) +
+      geom_vline(xintercept = 1:5, col = "lightblue", linetype="dashed") +
+      scale_color_manual(values = c('Non-Compliant'="#F46958",'Compliant'="#2DBBA7")) +
+      scale_y_continuous(labels = function(x) paste0(x, "%")) +
+      geom_text(check_overlap = TRUE, nudge_y = -10, nudge_x = -0.4, size = 3) +
+      facet_wrap(~Category) +
+      theme_light() +
+      coord_flip() +
+      theme(
+        panel.grid.major.y = element_blank(),
+        panel.border = element_blank(),
+        axis.ticks.y = element_blank()
+      ) +
+      theme(panel.margin = unit(0.15, "lines")) +
+      labs(y = "RAG Compliance %",
+           x = "",
+           color = "")
+    
+    plotSumL = ggplotly(l, tooltip = c("text")) %>% layout(legend=list(x=0, y= -0.15,
+                                                                       xanchor='left',
+                                                                       yanchor='bottom',
+                                                                       orientation='h'))
+    plotSumD = ggplotly(d, tooltip = c("text")) %>% layout(legend=list(x=0, y= -0.12,
+                                      xanchor='left',
+                                      yanchor='bottom',
+                                      orientation='h'))
+    
+    plotSum <- list(plotSumL = plotSumL,
+                    plotSumD = plotSumD)
+    return(plotSum)
+  }
+  
+  plotSum <- reactive({
+    makePlotlySum(TrendData())
+  })
+  output$plotSumL <- renderPlotly(plotSum()$plotSumL)
+  output$plotSumD <- renderPlotly(plotSum()$plotSumD)
+  
+  ## Compliance Trend Plots
+  makePlotlyTrend <- function(Data){
+    trendPlotList = list()
+    colReport <- c('#AA5486','#FF8000','#FCF596','#006A67','#7ED4AD','#37AFE1','#0079FF','#803D3B','#FF71CD','#9575DE','#36AE7C','#FFC100','#F7B5CA','#7BD3EA','#F67D56','#568203','#68343c','#e497b9','#b9ff56','#bda4f7')
+    # Multi-line Trend Plot
+    p <- ggplot(Data,           
+                aes(x = Date,
+                    y = CompliantPercent, 
+                    col = Category)) +
+      geom_line() +
+      geom_point(aes(text = sprintf("Month: %s<br>Compliance Percent: %s<br>Report Category: %s", paste0(month.abb[month(Date)],"-",year(Date)), CompliantPercent, Category))) +
+      scale_color_manual(values = colReport) +
+      scale_x_date(date_breaks = 'month', date_labels = "%b-%Y") +
+      scale_y_continuous(labels = function(x) paste0(x, "%")) +
+      labs(x = "Month",
+           y = "Report Compliance %",
+           color = "") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    trendPlotList[['trend1']] <- p
+    
+    # Faceted Trend Plot
+    p2 <- ggplot(Data,
+           aes(x = Date,
+               y = CompliantPercent)) +
+      geom_line(colour = "black", linewidth = 0.8) +
+      geom_point(shape = 16, size = 1.6, colour = "black", aes(text = sprintf("Month: %s<br>Compliance Percent: %s<br>Report Category: %s", paste0(month.abb[month(Date)],"-",year(Date)), CompliantPercent, Category))) +
+      facet_wrap(~ Category) +
+      labs(x = "",
+           y = "Report Compliance %") +
+      scale_x_date(date_breaks = 'month', date_labels = "%b-%Y") +
+      scale_y_continuous(labels = function(x) paste0(x, "%")) +
+      theme(legend.position="none", axis.text.x = element_text(angle = 55, hjust = 1)) +
+      theme(panel.margin = unit(0.1, "lines"))
+    
+    trendPlotList[['trend2']] <- p2
+    
+    for (report in unique(Data$Category)){
+      a <- Data %>% filter(Category == report) %>% 
+        mutate(compFlag = if_else(CompliantPercent < TargetPercent, 'Non-Compliant','Compliant'))
+                                                          
+      p3 <- ggplot(a,
+                   aes(x = Date,
+                       y = CompliantPercent)) + 
+        geom_area(fill="#563094", alpha=0.4) +
+        annotate("rect", fill = "lightgreen", alpha = 0.5, 
+                 xmin = min(a$Date), xmax = max(a$Date),
+                 ymin = max(a$TargetPercent), ymax = 100) +
+        annotate("rect", fill = "pink", alpha = 0.5, 
+                 xmin = min(a$Date), xmax = max(a$Date),
+                 ymin = 0, ymax = max(a$TargetPercent)) +
+        geom_line(linewidth = 0.8, colour = "#563094") +
+        geom_point(shape = 16, size = 3, colour = "#FFFFFF", 
+                   aes(fill = compFlag, text = sprintf("Month: %s<br>Compliance Percent: %s<br>Report Category: %s", paste0(month.abb[month(Date)],"-",year(Date)), CompliantPercent, Category))) +
+        scale_fill_manual(values = c("Compliant"="#4FA85E", "Non-Compliant"="#B34377")) +
+        geom_text(aes(label = after_stat(y)), nudge_x = 0.1, nudge_y = -5, size=3, colour = "#563094") +
+        scale_x_date(date_breaks = 'month', date_labels = "%b-%Y") +
+        scale_y_continuous(labels = function(x) paste0(x, "%")) +
+        labs(x = "Month",
+             y = "Compliance %") +
+        theme(axis.text.x = element_text(angle = 55, hjust = 1))
+      trendPlotList[[report]] <- p3
+    }
+    return(trendPlotList)
+  }
+  
+  trend <- reactive({
+    input$trend
+  })
+  
+  plotTrend <- reactive({
+    data <- TrendData() %>% select(c(Date, Category,CompliantPercent, TargetPercent)) %>% 
+      distinct_all(.) %>% 
+      group_by(Category) %>%
+      mutate(CategoryCount = n()) %>%
+      ungroup()
+    makePlotlyTrend(data)
+  })
+  output$plotTrend <- renderPlotly({
+    
+    if(trend() == "Trend Summary 1"){
+      ggplotly(plotTrend()$trend1, tooltip = c("text"))
+    }
+    else if(trend() == "Trend Summary 2"){
+      ggplotly(plotTrend()$trend2, tooltip = c("text"))
+    }
+    else if(trend() %in% expectedReports()) {
+      ggplotly(plotTrend()[[trend()]], tooltip = c("text"))
+    }
+    
+    
+    # else if(trend() == "iBOW"){
+    #   ggplotly(plotTrend()$iBOW, tooltip = c("text"))
+    # }
+    # else if(trend() == "eSAE"){
+    #   ggplotly(plotTrend()$eSAE, tooltip = c("text"))
+    # }
+    # else if(trend() == "Manual Checks"){
+    #   ggplotly(plotTrend()$`Manual Checks`, tooltip = c("text"))
+    # }
+    # else if(trend() == "RAVE OMD"){
+    #   ggplotly(plotTrend()$`RAVE OMD`, tooltip = c("text"))
+    # }
+    # else if(trend() == "UAT ME"){
+    #   ggplotly(plotTrend()$`UAT ME`, tooltip = c("text"))
+    # }
+    # else if(trend() == "UAM"){
+    #   ggplotly(plotTrend()$UAM, tooltip = c("text"))
+    # }
+    # else if(trend() == "iQOP"){
+    #   ggplotly(plotTrend()$iQOP, tooltip = c("text"))
+    # }
+    # else if(trend() == "DDPASS"){
+    #   ggplotly(plotTrend()$DDPASS, tooltip = c("text"))
+    # }
+    # else if(trend() == "DOA"){
+    #   ggplotly(plotTrend()$DOA, tooltip = c("text"))
+    # }
+    # else if(trend() == "LEAP"){
+    #   ggplotly(plotTrend()$LEAP, tooltip = c("text"))
+    # }
+    # else if(trend() == "LPLV-DBL"){
+    #   ggplotly(plotTrend()$`LPLV-DBL`, tooltip = c("text"))
+    # }
+    # else if(trend() == "SSM"){
+    #   ggplotly(plotTrend()$SSM, tooltip = c("text"))
+    # }
+    # else if(trend() == "DTS"){
+    #   ggplotly(plotTrend()$DTS, tooltip = c("text"))
+    # }
+    # else if(trend() == "CDI"){
+    #   ggplotly(plotTrend()$CDI, tooltip = c("text"))
+    # }
+  })
+  output$trendPlots <- renderUI({
+    reportFreq <- TrendData() %>% select(c(Category, Date)) %>% distinct_all(.) %>% group_by(Category) %>% tally() %>% data.table()
+    
+    if(trend() == "Trend Summary 1"){
+      plotlyOutput(outputId = "plotTrend", height = 600, width = "auto")
+    }
+    else if(trend() == "Trend Summary 2"){
+      plotlyOutput(outputId = "plotTrend", height = 600, width = "auto")
+    }
+    else if(trend() %in% expectedReports()) {
+          if(reportFreq$n[reportFreq$Category == trend()] > 1){
+            plotlyOutput(outputId = "plotTrend", height = 600, width = "auto")
+          } else {p("There is insufficient data available to plot a trend.")}
+    }
+    
+    # else if(trend() == "iBOW"){
+    #   if(reportFreq$n[reportFreq$Category == 'iBOW'] > 1){
+    #     plotlyOutput(outputId = "plotTrend", height = 600, width = "auto")
+    #   } else {p("There is insufficient data available to plot a trend.")}
+    # }
+    # else if(trend() == "eSAE"){
+    #   if(reportFreq$n[reportFreq$Category == 'eSAE'] > 1){
+    #     plotlyOutput(outputId = "plotTrend", height = 600, width = "auto")
+    #   } else {p("There is insufficient data available to plot a trend.")}
+    # }
+    # else if(trend() == "Manual Checks"){
+    #   if(reportFreq$n[reportFreq$Category == 'Manual Checks'] > 1){
+    #     plotlyOutput(outputId = "plotTrend", height = 600, width = "auto")
+    #   } else {p("There is insufficient data available to plot a trend.")}
+    # }
+    # else if(trend() == "RAVE OMD"){
+    #   if(reportFreq$n[reportFreq$Category == 'RAVE OMD'] > 1){
+    #     plotlyOutput(outputId = "plotTrend", height = 600, width = "auto")
+    #   } else {p("There is insufficient data available to plot a trend.")}
+    # }
+    # else if(trend() == "UAT ME"){
+    #   if(reportFreq$n[reportFreq$Category == 'UAT ME'] > 1){
+    #     plotlyOutput(outputId = "plotTrend", height = 600, width = "auto")
+    #   } else {p("There is insufficient data available to plot a trend.")}
+    # }
+    # else if(trend() == "UAM"){
+    #   if(reportFreq$n[reportFreq$Category == 'UAM'] > 1){
+    #     plotlyOutput(outputId = "plotTrend", height = 600, width = "auto")
+    #   } else {p("There is insufficient data available to plot a trend.")}
+    # }
+    # else if(trend() == "iQOP"){
+    #   if(reportFreq$n[reportFreq$Category == 'iQOP'] > 1){
+    #     plotlyOutput(outputId = "plotTrend", height = 600, width = "auto")
+    #   } else {p("There is insufficient data available to plot a trend.")}
+    # }
+    # else if(trend() == "DDPASS"){
+    #   if(reportFreq$n[reportFreq$Category == 'DDPASS'] > 1){
+    #     plotlyOutput(outputId = "plotTrend", height = 600, width = "auto")
+    #   } else {p("There is insufficient data available to plot a trend.")}
+    # }
+    # else if(trend() == "DOA"){
+    #   if(reportFreq$n[reportFreq$Category == 'DOA'] > 1){
+    #     plotlyOutput(outputId = "plotTrend", height = 600, width = "auto")
+    #   } else {p("There is insufficient data available to plot a trend.")}
+    # }
+    # else if(trend() == "LEAP"){
+    #   if(reportFreq$n[reportFreq$Category == 'LEAP'] > 1){
+    #     plotlyOutput(outputId = "plotTrend", height = 600, width = "auto")
+    #   } else {p("There is insufficient data available to plot a trend.")}
+    # }
+    # else if(trend() == "LPLV-DBL"){
+    #   if(reportFreq$n[reportFreq$Category == 'LPLV-DBL'] > 1){
+    #     plotlyOutput(outputId = "plotTrend", height = 600, width = "auto")
+    #   } else {p("There is insufficient data available to plot a trend.")}
+    # }
+    # else if(trend() == "SSM"){
+    #   if(reportFreq$n[reportFreq$Category == 'SSM'] > 1){
+    #     plotlyOutput(outputId = "plotTrend", height = 600, width = "auto")
+    #   } else {p("There is insufficient data available to plot a trend.")}
+    # }
+    # else if(trend() == "DTS"){
+    #   if(reportFreq$n[reportFreq$Category == 'DTS'] > 1){
+    #     plotlyOutput(outputId = "plotTrend", height = 600, width = "auto")
+    #   } else {p("There is insufficient data available to plot a trend.")}
+    # }
+    # else if(trend() == "CDI"){
+    #   if(reportFreq$n[reportFreq$Category == 'CDI'] > 1){
+    #     plotlyOutput(outputId = "plotTrend", height = 600, width = "auto")
+    #   } else {p("There is insufficient data available to plot a trend.")}
+    # }
+  })
+  
+
+  ## Compliance RAG Plot
+  makePlotlyRAG <- function(PlotData, clus, area, time, gh, srgh) {
+    if (time == "Ongoing") {
+      PlotData2 <- PlotData %>%
+        filter(Date == max(Date)) %>%
+        group_by(Cluster, TA, `DM GHs`, `DM Sr GHs`, `Report Name`, `RAG Value`) %>%
+        summarise(n = n())
+
+      if (length(clus) > 0){
+        PlotData3 <- PlotData2 %>%
+               filter(Cluster %in% clus)
+      }
+      if (length(area) > 0){
+        PlotData3 <- PlotData2 %>%
+          filter(TA %in% area)
+      }
+      if (length(gh) > 0){
+        PlotData3 <- PlotData2 %>%
+          filter(`DM GHs` %in% gh)
+      }
+      if (length(srgh) > 0){
+        PlotData3 <- PlotData2 %>%
+          filter(`DM Sr GHs` %in% srgh)
+      }
+      if (length(clus) == 0 & length(area) == 0 & length(gh) == 0 & length(srgh) == 0){
+        PlotData3 <- PlotData2
+      }
+      PlotData3 <- PlotData3 %>%
+            group_by(`Report Name`, `RAG Value`) %>%
+            summarise(n = sum(n)) %>%
+            data.table()
+
+      plot <- ggplotly(ggplot(PlotData3, aes(x = `Report Name`, y = n, fill = `RAG Value`, label = n)) +
+        geom_bar(position = "stack", stat = "identity",
+                 aes(text = sprintf("Report: %s<br>RAG Value: %s<br>RAG Count: %s", `Report Name`, `RAG Value`, n))) +
+        scale_fill_manual(values = c("RED" = "#f35541", "AMBER" = "#ffd22b", "GREEN" = "#37B388")) +
+        geom_text(size = 3, position = position_stack(vjust = 0.5)) +
+        theme(
+          axis.title.y = element_blank(), axis.title.x = element_blank(),
+          axis.text.x = element_text(angle = 45, hjust = 1)
+        ),
+        tooltip = c("text"))
+    }
+    if (time == "Month") {
+      PlotData2 <- PlotData %>%
+        group_by(Month, Cluster, TA,`DM GHs`, `DM Sr GHs`, `Report Name`, `RAG Value`) %>%
+        summarise(n = n())
+      
+      if (length(clus) > 0){
+        PlotData3 <- PlotData2 %>%
+          filter(Cluster %in% clus)
+      }
+      if (length(area) > 0){
+        PlotData3 <- PlotData2 %>%
+          filter(TA %in% area)
+      }
+      if (length(gh) > 0){
+        PlotData3 <- PlotData2 %>%
+          filter(`DM GHs` %in% gh)
+      }
+      if (length(srgh) > 0){
+        PlotData3 <- PlotData2 %>%
+          filter(`DM Sr GHs` %in% srgh)
+      }
+      if (length(clus) == 0 & length(area) == 0 & length(gh) == 0 & length(srgh) == 0){
+        PlotData3 <- PlotData2
+      }
+      PlotData3 <- PlotData3 %>%
+        group_by(Month, `Report Name`, `RAG Value`) %>%
+        summarise(n = sum(n)) %>%
+        data.table()
+      
+      plot <- ggplotly(
+        ggplot(PlotData3, aes(x = `Report Name`, y = n, fill = `RAG Value`, label = n)) +
+        geom_col(aes(text = sprintf("Report: %s<br>RAG Value: %s<br>RAG Count: %s", `Report Name`, `RAG Value`, n))) +
+        facet_wrap(. ~ Month, scales = "free_x") +
+        scale_fill_manual(values = c("RED" = "#f35541", "AMBER" = "#ffd22b", "GREEN" = "#37B388")) +
+        geom_text(size = 3, position = position_stack(vjust = 0.5)) +
+        theme(
+          axis.title.y = element_blank(), axis.title.x = element_blank(),
+          axis.text.x = element_text(angle = 40, hjust = 1)
+        ),
+        tooltip = c("text"))
+    }
+    if (time == "Quarter") {
+      PlotData2 <- PlotData %>%
+        group_by(Year, Quarter, Month, Cluster, TA, `DM GHs`, `DM Sr GHs`, `Report Name`, `RAG Value`) %>%
+        summarise(n = n()) %>%
+        group_by(Quarter, Cluster, TA, `DM GHs`, `DM Sr GHs`, `Report Name`, `RAG Value`) %>%
+        summarise(n = mean(n))
+
+      if (length(clus) > 0){
+        PlotData3 <- PlotData2 %>%
+          filter(Cluster %in% clus)
+      }
+      if (length(area) > 0){
+        PlotData3 <- PlotData2 %>%
+          filter(TA %in% area)
+      }
+      if (length(gh) > 0){
+        PlotData3 <- PlotData2 %>%
+          filter(`DM GHs` %in% gh)
+      }
+      if (length(srgh) > 0){
+        PlotData3 <- PlotData2 %>%
+          filter(`DM Sr GHs` %in% srgh)
+      }
+      if (length(clus) == 0 & length(area) == 0 & length(gh) == 0 & length(srgh) == 0){
+        PlotData3 <- PlotData2
+      }
+      PlotData3 <- PlotData3 %>%
+        group_by(Quarter, `Report Name`, `RAG Value`) %>%
+        summarise(n = sum(n)) %>%
+        data.table()
+
+      plot <- ggplotly(
+        ggplot(PlotData3, aes(x = `Report Name`, y = n, fill = `RAG Value`, label = round(n, 2))) +
+        geom_col(aes(text = sprintf("Report: %s<br>RAG Value: %s<br>RAG Count: %s", `Report Name`, `RAG Value`, n))) +
+        facet_wrap(. ~ Quarter, scales = "free_x") +
+        scale_fill_manual(values = c("RED" = "#f35541", "AMBER" = "#ffd22b", "GREEN" = "#37B388")) +
+        geom_text(size = 3, position = position_stack(vjust = 0.5)) +
+        theme(
+          axis.title.y = element_blank(), axis.title.x = element_blank(),
+          axis.text.x = element_text(angle = 40, hjust = 1),
+          legend.position="bottom"
+        ),
+        tooltip = c("text"))
+    }
+    if (time == "Year") {
+      PlotData2 <- PlotData %>%
+        group_by(Year, Quarter, Month, Cluster, TA, `DM GHs`, `DM Sr GHs`, `Report Name`, `RAG Value`) %>%
+        summarise(n = n()) %>%
+        group_by(Year, Cluster, TA, `DM GHs`, `DM Sr GHs`, `Report Name`, `RAG Value`) %>%
+        summarise(n = mean(n))
+
+      if (length(clus) > 0){
+        PlotData3 <- PlotData2 %>%
+          filter(Cluster %in% clus)
+      }
+      if (length(area) > 0){
+        PlotData3 <- PlotData2 %>%
+          filter(TA %in% area)
+      }
+      if (length(gh) > 0){
+        PlotData3 <- PlotData2 %>%
+          filter(`DM GHs` %in% gh)
+      }
+      if (length(srgh) > 0){
+        PlotData3 <- PlotData2 %>%
+          filter(`DM Sr GHs` %in% srgh)
+      }
+      if (length(clus) == 0 & length(area) == 0 & length(gh) == 0 & length(srgh) == 0){
+        PlotData3 <- PlotData2
+      }
+      PlotData3 <- PlotData3 %>%
+        group_by(Year, `Report Name`, `RAG Value`) %>%
+        summarise(n = sum(n)) %>%
+        data.table()
+
+      plot <- ggplotly(
+        ggplot(PlotData3, aes(x = `Report Name`, y = n, fill = `RAG Value`, label = round(n, 2))) +
+        geom_col(aes(text = sprintf("Report: %s<br>RAG Value: %s<br>RAG Count: %s", `Report Name`, `RAG Value`, n))) +
+        facet_wrap(. ~ Year, scales = "free_x") +
+        scale_fill_manual(values = c("RED" = "#f35541", "AMBER" = "#ffd22b", "GREEN" = "#37B388")) +
+        geom_text(size = 3, position = position_stack(vjust = 0.5)) +
+        theme(
+          axis.title.y = element_blank(), axis.title.x = element_blank(),
+          axis.text.x = element_text(angle = 40, hjust = 1),
+          legend.position="bottom"
+        ),
+        tooltip = c("text"))
+    }
+
+    return(plot)
+  }
+
+  # Update values based on selected TA
+  observeEvent(input$ta,
+    {
+      updateSelectInput(
+        session, "cluster",
+        choices = if (is.null(input$ta)) {
+          unique(PlotData()$Cluster)
+        } else {
+          unique(filter(PlotData(), TA %in% input$ta)[["Cluster"]])
+        },
+        selected = input$cluster
+      )
+      #--- New ---#
+      updateSelectInput(
+        session, "dmGH",
+        choices = if (is.null(input$ta)) {
+          unique(PlotData()$`DM GHs`)
+        } else {
+          unique(filter(PlotData(), TA %in% input$ta)[["DM GHs"]])
+        },
+        selected = input$dmGH
+      )
+      updateSelectInput(
+        session, "dmSGH",
+        choices = if (is.null(input$ta)) {
+          unique(PlotData()$`DM Sr GHs`)
+        } else {
+          unique(filter(PlotData(), TA %in% input$ta)[["DM Sr GHs"]])
+        },
+        selected = input$dmSGH
+      )
+    },
+    ignoreNULL = FALSE
+  )
+  # Update values based on selected Cluster
+  observeEvent(input$cluster,
+    {
+      updateSelectInput(
+        session, "ta",
+        choices = if (is.null(input$cluster)) {
+          unique(PlotData()$TA)
+        } else {
+          unique(filter(PlotData(), Cluster %in% input$cluster)[["TA"]])
+        },
+        selected = input$ta
+      )
+      #--- New ---#
+      updateSelectInput(
+        session, "dmGH",
+        choices = if (is.null(input$cluster)) {
+          unique(PlotData()$`DM GHs`)
+        } else {
+          unique(filter(PlotData(), Cluster %in% input$cluster)[["DM GHs"]])
+        },
+        selected = input$dmGH
+      )
+      updateSelectInput(
+        session, "dmSGH",
+        choices = if (is.null(input$cluster)) {
+          unique(PlotData()$`DM Sr GHs`)
+        } else {
+          unique(filter(PlotData(), Cluster %in% input$cluster)[["DM Sr GHs"]])
+        },
+        selected = input$dmSGH
+      )
+    },
+    ignoreNULL = FALSE
+  )
+  # Update values based on selected Group Head
+  observeEvent(input$dmGH,
+               {
+                 updateSelectInput(
+                   session, "ta",
+                   choices = if (is.null(input$dmGH)) {
+                     unique(PlotData()$TA)
+                   } else {
+                     unique(filter(PlotData(), `DM GHs` %in% input$dmGH)[["TA"]])
+                   },
+                   selected = input$ta
+                 )
+                 updateSelectInput(
+                   session, "cluster",
+                   choices = if (is.null(input$dmGH)) {
+                     unique(PlotData()$Cluster)
+                   } else {
+                     unique(filter(PlotData(), `DM GHs` %in% input$dmGH)[["Cluster"]])
+                   },
+                   selected = input$cluster
+                 )
+                 updateSelectInput(
+                   session, "dmSGH",
+                   choices = if (is.null(input$dmGH)) {
+                     unique(PlotData()$`DM Sr GHs`)
+                   } else {
+                     unique(filter(PlotData(), `DM GHs` %in% input$dmGH)[["DM Sr GHs"]])
+                   },
+                   selected = input$dmSGH
+                 )
+               },
+               ignoreNULL = FALSE
+  )
+  # Update values based on selected Sr Group Head
+  observeEvent(input$dmSGH,
+               {
+                 updateSelectInput(
+                   session, "ta",
+                   choices = if (is.null(input$dmSGH)) {
+                     unique(PlotData()$TA)
+                   } else {
+                     unique(filter(PlotData(), `DM Sr GHs` %in% input$dmSGH)[["TA"]])
+                   },
+                   selected = input$ta
+                 )
+                 updateSelectInput(
+                   session, "cluster",
+                   choices = if (is.null(input$dmSGH)) {
+                     unique(PlotData()$Cluster)
+                   } else {
+                     unique(filter(PlotData(), `DM Sr GHs` %in% input$dmSGH)[["Cluster"]])
+                   },
+                   selected = input$cluster
+                 )
+                 updateSelectInput(
+                   session, "dmGH",
+                   choices = if (is.null(input$dmSGH)) {
+                     unique(PlotData()$`DM GHs`)
+                   } else {
+                     unique(filter(PlotData(), `DM Sr GHs` %in% input$dmSGH)[["DM GHs"]])
+                   },
+                   selected = input$dmGH
+                 )
+               },
+               ignoreNULL = FALSE
+  )
+
+  observeEvent(input$time,
+    {
+      updateSelectInput(
+        session, "cluster",
+        selected = ""
+      )
+      updateSelectInput(
+        session, "ta",
+        selected = ""
+      )
+      updateSelectInput(
+        session, "dmGH",
+        selected = ""
+      )
+      updateSelectInput(
+        session, "dmSGH",
+        selected = ""
+      )
+    },
+    ignoreNULL = FALSE
+  )
+
+  clus <- reactive({
+    input$cluster
+  })
+  area <- reactive({
+    input$ta
+  })
+  time <- reactive({
+    input$time
+  })
+  gh <- reactive({
+    input$dmGH
+  })
+  srgh <- reactive({
+    input$dmSGH
+  })
+
+  plotRAG <- reactive({
+    makePlotlyRAG(PlotData(), clus(), area(), time(), gh(), srgh())
+  })
+  output$plotRAG <- renderPlotly(plotRAG())
+  
+  # Study Tab -----------------------------------------------------------------#
+  output$studyTable <- function() {
+    if (isTRUE(input$switchHI)) {
+      allData()$StudyHIComplete
+    } else {
+      allData()$StudyAllComplete
+    }
+  }
+  
+  studyData1 <- reactive({
+    if (isTRUE(input$switchHI)) {
+      allData()$StudyHIComp
+    } else {
+      allData()$StudyAllComp
+    }
+  })
+  studyData2 <- reactive({
+    if (isTRUE(input$switchHI)) {
+      allData()$StudyDataHI_Final
+    } else {
+      allData()$StudyDataAll_Final
+    }
+  })
+  
+  makePlotlyStudy <- function(StudyComp, StudyRAG){
+    # Study Compliance - Star Plot
+    colnames(StudyComp) <- c('Category','ApplicableStudies','CompliantStudies','CompliantPercent','TargetPercent')
+    StudyComp <- StudyComp %>% 
+      filter(!is.na(CompliantPercent)) %>%
+      mutate(compFlag = if_else(CompliantPercent < TargetPercent, 'Non-Compliant','Compliant'))
+    
+    starPlot <- ggplot(StudyComp, aes(x=Category, y=CompliantPercent, colour=compFlag, label = CompliantPercent)) +
+      geom_segment(aes(x=Category, xend=Category, y=0, yend=CompliantPercent), color="#fff1c5") +
+      geom_point(size=5, alpha=0.7, shape=11, stroke=2, fill=alpha("lightblue", 0.3), aes(text = sprintf("Category: %s<br>Applicable Studies: %s<br>Compliant Studies: %s<br>Target Percent: %s", Category, ApplicableStudies, CompliantStudies, TargetPercent))) +
+      scale_color_manual(values = c('Non-Compliant'="#F46958",'Compliant'="#2DBBA7")) +
+      scale_y_continuous(labels = function(x) paste0(x, "%")) +
+      geom_text(check_overlap = TRUE, nudge_y = 6, size = 3) +
+      theme_light() +
+      theme(
+        panel.grid.major.y = element_blank(),
+        panel.border = element_blank(),
+        axis.ticks.y = element_blank()
+      ) +
+      labs(x = "",
+           y = "Compliance %",
+           color = "")
+    
+    # Study RAG - Tile Plot
+    StudyRAG <- StudyRAG %>% 
+      select_if(function(x) !(all(is.na(x)))) %>%
+      pivot_longer(!Study, names_to = "Category", values_to = "RAG")
+    
+    cols <- c("GREEN" = "#2DBBA7", "AMBER" = "#FFD22B", "RED" = "#F46958")
+    tilePlot <- ggplot(StudyRAG, aes(x=Category, y=Study, fill=RAG)) +
+      geom_tile(color = "white",
+                linewidth = 1.5,
+                linetype = 1) + 
+      theme_minimal() + 
+      theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+      coord_equal() + 
+      coord_flip() +
+      scale_fill_manual(values = cols, na.value = "white") +
+      labs(x = "",
+           y = "")
+    studyPlots <- list(starPlot = ggplotly(starPlot, tooltip = c("text")),
+                       tilePlot = ggplotly(tilePlot))
+    return(studyPlots)
+  }
+  
+  studyPlot <- reactive({
+    makePlotlyStudy(studyData1(),studyData2())
+  })
+  output$studyCompliance <- renderPlotly(studyPlot()$starPlot)
+  output$studyRAG <- renderPlotly(studyPlot()$tilePlot)
+  
+  # Manager Tab ---------------------------------------------------------------#
+  output$managerTable <- function() {
+    allData()$ManagerData
+  }
+  
+  AssociateDataCount <- reactive(allData()$AssociateDataCount)
+  AssociateDataPlot <- reactive(allData()$AssociateDataPlot)
+  
+  output$managerPlot1 <- renderPlotly({
+    plot_ly(AssociateDataPlot() %>% group_by(TimesheetCompliance, TimeColor) %>% tally(), 
+            labels = ~TimesheetCompliance, 
+            values = ~n,  type = 'pie',
+            marker = list( colors = ~TimeColor), 
+            source = "myPlotSource", 
+            customdata = ~TimesheetCompliance)
+  })
+  myPlotEventData <- reactive({
+    event_data(
+      event = "plotly_click",
+      source = "myPlotSource")
+  })
+  output$managerPlot2 <- function(){
+    AssociateDataPlot <- AssociateDataPlot() %>%
+      mutate(
+        TimesheetCompliance = case_when(Timesheet == 'GREEN' ~ 'Compliant',
+                                        Timesheet == 'RED' ~ 'Non-Compliant',
+                                        is.na(Timesheet) ~ NA),
+        TrainingCompliance = case_when(Training == 'GREEN' ~ 'Compliant',
+                                       Training == 'RED' ~ 'Non-Compliant',
+                                       is.na(Training) ~ NA),
+        TimeColor = case_when(Timesheet == 'GREEN' ~ "#2DBBA7", Timesheet == 'RED' ~ "#F46958", is.na(Timesheet) ~ "white"),
+        TrainColor = case_when(Training == 'GREEN' ~ "#2DBBA7", Training == 'RED' ~ "#F46958", is.na(Training) ~ "white"),
+        Timesheet_New = Timesheet,
+        Training_New = Training,
+        Timesheet_New = cell_spec(Timesheet_New,
+                                  bold = T, color = case_when(Timesheet_New == "RED" ~ "#F46958", Timesheet_New == "GREEN" ~ "#2DBBA7", Timesheet_New == "AMBER" ~ "#FFD22B", is.na(Timesheet_New) ~ "white"),
+                                  background = case_when(Timesheet_New == "RED" ~ "#F46958", Timesheet_New == "GREEN" ~ "#2DBBA7", Timesheet_New == "AMBER" ~ "#FFD22B", is.na(Timesheet_New) ~ "transparent")
+        ),
+        Training_New = cell_spec(Training_New,
+                                 bold = T, color = case_when(Training_New < 100 ~ "#F46958", Training_New >= "GREEN" ~ "#2DBBA7", is.na(Training_New) ~ "white"),
+                                 background = case_when(Training_New < 100 ~ "#F46958", Training_New >= 100 ~ "#2DBBA7", is.na(Training_New) ~ "transparent")
+        )
+      )
+    data.table(AssociateDataPlot[TimesheetCompliance %in% myPlotEventData()$customdata[[1]]]) %>%
+      select(c(`Associate Name`, 'Timesheet_New')) %>%
+      rename(c("Timesheet Compliance"="Timesheet_New")) %>%
+      knitr::kable(escape = F) %>%
+      kable_styling(bootstrap_options = c("hover"))
+  }
+  
+  output$managerPlots <- renderUI({
+    if (AssociateDataCount() > 0){
+      
+      splitLayout(cellWidths = c("60%", "40%"),
+                   plotlyOutput("managerPlot1"),
+                   tableOutput("managerPlot2"))
+    } else {
+      p("There is insufficient data available to display the plots.")
+    }
+  })
+  
+  
+  ## Credential Repository - Add or Delete Users -------------------------------
+  # Add user credentials
+  observeEvent(input$submit, {
+    data <- data.frame(
+      username_id = toupper(input$username_id),
+      pass = input$pass,
+      permission = input$permission
+    )
+    data$passod <- sapply(data$pass, password_store)
+    credentials <<- rbind(credentials, data)
+  })
+
+  # Delete user credentials
+  observeEvent(input$deleteRow, {
+    credentials <<- credentials %>%
+      filter(row_number() < nrow(.))
+  })
+
+  output$credentials <- DT::renderDataTable({
+    input$submit
+    input$deleteRow
+
+    column2hide <- c("passod")
+
+    return(DT::datatable(credentials,
+      options = list(columnDefs = list(list(visible = FALSE, targets = column2hide)))
+    ))
+  })
+
+  # Save the updated entries in database
+  observe({
+    input$submit
+    input$deleteRow
+    write.csv(credentials, userCredpath, row.names = FALSE)
+  })
+
+  # Download credentials
+  observe({
+    input$submit
+    input$deleteRow
+    output$downloadData <- downloadHandler(
+      filename = function() {
+        paste0(pathwd,"/userCred.csv")
+      },
+      content = function(file) {
+        write.csv(credentials, file, row.names = FALSE)
+      }
+    )
+  })
+
+  #------------------------ UPLOAD DATA -------------------------------
+  # Upload History Data
+  add2History <- function(data, modDate, by) {
+    # path = '~/CDAMCompliance'
+    histFile <- paste0(pathwd,"/uploadHistory.csv")
+    uploadHist <- data.frame(read.csv(histFile, header = TRUE)) %>%
+      mutate(LastModified = as.Date(LastModified))
+    newEntry <- data.frame(
+      Data = data,
+      LastModified = modDate,
+      ModifiedBy = by
+    )
+    uploadHist <- rbind(uploadHist, newEntry)
+    write.csv(uploadHist, histFile, row.names = FALSE)
+  }
+  
+  ## CDAM Solutions ------------------------------------------------------------
+  solutions <- data.table(read_excel(paste0(pathwd,"/SolutionsCDAM.xlsx"))) %>%
+    mutate(Status = as.logical(Status))
+  values <- reactiveValues()
+  values$DF <- solutions
+  
+  ## Handsontable
+  output$solTable <- renderRHandsontable({
+    DF <- values$DF
+    if (!is.null(DF))
+      rhandsontable(DF, useTypes = TRUE, stretchH = "all")
+  })
+  observe({
+    if (!is.null(input$solTable)) {
+      DF <- hot_to_r(input$solTable)
+    } else {
+      if (is.null(values$DF))
+        DF <- DF
+      else
+        DF <- values$DF
+    }
+    values$DF <- DF
+  })
+  
+  observeEvent(input$saveSol, {
+    dataFile <- paste0(pathwd,"/SolutionsCDAM.xlsx")
+    xlsx::write.xlsx(values$DF, dataFile, row.names = FALSE)
+  })
+  
+  
+  ## Upload & Validate Data - Report Name - Raw Data----------------------------
+
+  observeEvent(input$rawdata, {
+    rData <<- data.table(read_excel(input$rawdata$datapath))
+  })
+
+  output$rawdataInfo <- renderText({
+    req(input$rawdata)
+
+    # Validate columns ------------------------------#
+    validate_cols <- function(data, expectedCols) {
+      dataCols <- colnames(data)
+
+      if (all(expectedCols %in% dataCols) && length(dataCols) == length(expectedCols)) {
+        return(TRUE) # Columns match
+      } else {
+        return(FALSE) # Columns do not match
+      }
+    }
+
+    expectedCols <- c("Report Name", "Study", "High Impact", "RAG Value")
+    isValidCols <- validate_cols(rData, expectedCols)
+
+    # Validate Report Names -------------------------#
+    validate_report <- function(data, expectedVal) {
+      dataVal <- unique(data$`Report Name`)
+
+      if (all(dataVal %in% expectedVal)) {
+        return(TRUE)
+      } else {
+        return(FALSE)
+      }
+    }
+
+    expectedReports <- reactive(allData()$expectedReports)
+      #c("DOA", "DDPASS", "DTS", "UAM", "iBOW", "iQOP", "eSAE", "LEAP", "LPLV-DBL", "Manual Checks", "SSM", "UAT ME", "CDI")
+    isValidReport <- validate_report(rData, expectedReports())
+
+    text <- ""
+    if (!isValidCols | !isValidReport) {
+      text <- paste(
+        "Incorrect Column Names or Report Names!\n", "     Expected Column Names - ", paste(expectedCols, collapse = ", "), "\n",
+        "     Expected Report Names - ", paste(expectedReports(), collapse = ", ")
+      )
+    }
+
+    return(text)
+  })
+
+  output$rawdataTable <- DT::renderDataTable({
+    req(input$rawdata)
+    data <- DT::datatable(rData, filter = list(position = "top", clear = FALSE))
+    return(data)
+  })
+
+  # Save the updated entries in database
+  observeEvent(input$submitRaw, {
+    rData <- rData %>% mutate(Date = as.Date(today()))
+    basic <- allData()$BasicDataAll %>% mutate(Date = as.Date(Date))
+    basicNew <- rbind(basic, rData)
+    dataFile <- paste0(pathwd,"/CDAM_Basic.xlsx")
+    xlsx::write.xlsx(basicNew, dataFile, row.names = FALSE)
+    stat_text <<- "Success! Data uploaded!"
+
+    add2History("Report Data", as.Date(today()), User())
+  })
+
+  output$stat_text <- renderText({
+    req(input$submitRaw)
+    return(stat_text)
+  })
+
+  ## Upload Data - iBoW --------------------------------------------------------
+  observeEvent(input$ibowdata, {
+    iBoWColumns <- c("Trial", "DM Ops Cluster", "DO Ops Unit", "Phase", "TDM", "PDM", "DM GHs", "DM Sr GHs")
+
+    ibowData <<- data.table(read_xlsx(input$ibowdata$datapath)) %>%
+      select(all_of(iBoWColumns))
+  })
+
+  output$ibowdataTable <- DT::renderDataTable({
+    req(input$ibowdata)
+    data <- DT::datatable(ibowData, filter = list(position = "top", clear = FALSE))
+    return(data)
+  })
+
+  # Save the updated entries in database
+  observeEvent(input$submitBow, {
+    dataFile <- paste0(pathwd,"/CDAM_iBow.xlsx")
+    xlsx::write.xlsx(ibowData, dataFile, row.names = FALSE)
+    stat_text2 <<- "Success! Data uploaded!"
+
+    add2History("iBOW", as.Date(today()), User())
+  })
+
+  output$stat_text2 <- renderText({
+    req(input$submitBow)
+    return(stat_text2)
+  })
+
+  ## Upload Data - DTS ---------------------------------------------------------
+  observeEvent(input$dtsdata, {
+    dtsData <<- data.table(read_xlsx(input$dtsdata$datapath))
+  })
+
+  output$dtsdataTable <- DT::renderDataTable({
+    req(input$dtsdata)
+    data <- DT::datatable(dtsData, filter = list(position = "top", clear = FALSE))
+    return(data)
+  })
+
+  # Save the updated entries in database
+  observeEvent(input$submitDTS, {
+    dataFile <- paste0(pathwd,"/CDAM_DTS.xlsx")
+    xlsx::write.xlsx(dtsData, dataFile, row.names = FALSE)
+    stat_text3 <<- "Success! Data uploaded!"
+
+    add2History("DTS", as.Date(today()), User())
+  })
+
+  output$stat_text3 <- renderText({
+    req(input$submitDTS)
+    return(stat_text3)
+  })
+
+  ## Upload Data - IDR ---------------------------------------------------------
+  observeEvent(input$idrdata, {
+    idrData <<- data.table(read_xlsx(input$idrdata$datapath))
+  })
+
+  output$idrdataTable <- DT::renderDataTable({
+    req(input$idrdata)
+    data <- DT::datatable(idrData, filter = list(position = "top", clear = FALSE))
+    return(data)
+  })
+
+  # Save the updated entries in database
+  observeEvent(input$submitIDR, {
+    dataFile <- paste0(pathwd,"/CDAM_IDR.xlsx")
+    xlsx::write.xlsx(idrData, dataFile, row.names = FALSE)
+    stat_text4 <<- "Success! Data uploaded!"
+
+    add2History("IDR", as.Date(today()), User())
+  })
+
+  output$stat_text4 <- renderText({
+    req(input$submitIDR)
+    return(stat_text4)
+  })
+
+  ## Upload Data - HCR ---------------------------------------------------------
+  observeEvent(input$hcrdata, {
+    hcrData <<- data.table(read_xlsx(input$hcrdata$datapath))
+  })
+
+  output$hcrdataTable <- DT::renderDataTable({
+    req(input$hcrdata)
+    data <- DT::datatable(hcrData, filter = list(position = "top", clear = FALSE))
+    return(data)
+  })
+
+  # Save the updated entries in database
+  observeEvent(input$submitHCR, {
+    dataFile <- paste0(pathwd,"/CDAM_HCR.xlsx")
+    xlsx::write.xlsx(hcrData, dataFile, row.names = FALSE)
+    stat_text5 <<- "Success! Data uploaded!"
+
+    add2History("HCR", as.Date(today()), User())
+  })
+
+  output$stat_text5 <- renderText({
+    req(input$submitHCR)
+    return(stat_text5)
+  })
+
+
+  ## Download Data Templates ---------------------------------------------------
+  ReportData <- c("Report Name", "Study", "High Impact", "RAG Value")
+  iBoW <- c("Trial", "DM Ops Cluster", "DO Ops Unit", "Phase", "TDM", "PDM", "DM GHs", "DM Sr GHs")
+  DTS <- c("Report Name", "Study", "High Impact", "RAG Value")
+  IDR <- c("", "")
+  HCR <- c("Novartis 521", "Associate Name", "GH 521", "GH Name", "NOV521")
+
+  DFlist <- list(
+    "ReportData" = setNames(as.list(ReportData), rep(1:4)),
+    "HCR" = setNames(as.list(HCR), rep(1:5)),
+    "DTS" = setNames(as.list(DTS), rep(1:4)),
+    "iBoW" = setNames(as.list(iBoW), rep(1:8)),
+    "IDR" = setNames(as.list(IDR), rep(1:2))
+  )
+  
+  expectedReports <- reactive(allData()$expectedReports)
+
+  output$templateInfo <- renderText({
+    req(input$tempDown)
+    if (input$tempDown == "ReportData") {
+      tInfo <- paste(
+        "Report Data Key Items -\n", "     Expected Column Names - ", paste(ReportData, collapse = ", "), "\n",
+        "     Expected Report Names - ", paste(expectedReports(), collapse = ", ")
+      )
+    }
+    if (input$tempDown == "iBoW") {
+      tInfo <- paste("iBoW Data Key Items -\n", "     Must be export of DM iBoW\n", "     Expected Column Names - ", paste(iBoW, collapse = ", "))
+    }
+    if (input$tempDown == "DTS") {
+      tInfo <- paste("DTS Data Key Items -\n", "     Expected Column Names - ", paste(DTS, collapse = ", "))
+    }
+    if (input$tempDown == "IDR") {
+      tInfo <- paste(
+        "IDR Data Key Items -\n", "     Must be copy of Report Usage Metrics - DM Reports \n",
+        "     Expected Column Names - ", paste(c("Studies", "Cluster", "High Impact", "Number of Applicable Reports", "Number of Utilized Reports", "% Compliance"), collapse = ", ")
+      )
+    }
+    if (input$tempDown == "HCR") {
+      tInfo <- paste("HCR Data Key Items -\n", "     Expected Column Names - ", paste(HCR, collapse = ", "))
+    }
+
+    return(tInfo)
+  })
+
+  output$downloadTemp <- downloadHandler(
+    filename = function() {
+      paste0("CDAM_", input$tempDown, ".xlsx")
+    },
+    content = function(file) {
+      wb <- openxlsx::createWorkbook()
+      openxlsx::addWorksheet(wb, "Sheet1")
+      openxlsx::writeData(wb, "Sheet1", DFlist[[input$tempDown]], startCol = 1, startRow = 1, colNames = TRUE)
+
+      if (input$tempDown == "iBoW") {
+        openxlsx::writeComment(wb, "Sheet1",
+          col = 1, row = 1,
+          comment = openxlsx::createComment("Paste export from iBOW. Make sure these columns are present.")
+        )
+      } else if (input$tempDown == "IDR") {
+        openxlsx::writeComment(wb, "Sheet1",
+          col = 1, row = 1,
+          comment = openxlsx::createComment("Paste Report Usage Metrics report. Make sure columns start in Row 8.")
+        )
+      } else {
+        openxlsx::writeComment(wb, "Sheet1",
+          col = 1, row = 1,
+          comment = openxlsx::createComment("Do not modify column names.")
+        )
+      }
+
+      # Highlighting column names
+      num_cols <- length(DFlist[[input$tempDown]])
+      highlight_style <- openxlsx::createStyle(fgFill = "#8ee8df", textDecoration = "bold")
+      if (input$tempDown != "IDR") {
+        for (i in 1:num_cols) {
+          addStyle(wb, "Sheet1", highlight_style, rows = 1, cols = i, gridExpand = TRUE)
+        }
+      } else {
+        addStyle(wb, "Sheet1", highlight_style, rows = 8, cols = 1:60, gridExpand = TRUE)
+      }
+      saveWorkbook(wb, file, overwrite = TRUE)
+    }
+  )
+
+  ## Upload Log ----------------------------------------------------------------
+  output$uploadTable <- DT::renderDataTable({
+    histFile <- paste0(pathwd,"/uploadHistory.csv")
+    uploadHist <- data.frame(read.csv(histFile, header = TRUE))
+    return(DT::datatable(uploadHist, filter = list(position = "top", clear = FALSE)))
+  })
+    
+  ### Download All Data
+  output$downloadAllData <- downloadHandler(
+    filename = function() {
+      paste0("CDAMCompliance_DataExport_", today(), ".xlsx")
+    },
+    content = function(file) {
+      # BasicDataAll, TrendDataAll, TrendDataHI, DTS, HCR, IDR, iBoW
+      wb <- openxlsx::createWorkbook()
+      openxlsx::addWorksheet(wb, "Report Data")
+      openxlsx::writeData(wb, "Report Data", allData()$BasicDataAll, startCol = 1, startRow = 1, colNames = TRUE)
+      
+      openxlsx::addWorksheet(wb, "iBoW")
+      openxlsx::writeData(wb, "iBoW", allData()$iBoW, startCol = 1, startRow = 1, colNames = TRUE)
+      
+      openxlsx::addWorksheet(wb, "IDR")
+      openxlsx::writeData(wb, "IDR", allData()$IDR, startCol = 1, startRow = 1, colNames = TRUE)
+      
+      openxlsx::addWorksheet(wb, "DTS")
+      openxlsx::writeData(wb, "DTS", allData()$DTS, startCol = 1, startRow = 1, colNames = TRUE)
+      
+      openxlsx::addWorksheet(wb, "HCR")
+      openxlsx::writeData(wb, "HCR", allData()$HCR, startCol = 1, startRow = 1, colNames = TRUE)
+      
+      openxlsx::addWorksheet(wb, "Trend Data - All")
+      openxlsx::writeData(wb, "Trend Data - All", allData()$TrendDataAll, startCol = 1, startRow = 1, colNames = TRUE)
+      
+      openxlsx::addWorksheet(wb, "Trend Data - HighImpact")
+      openxlsx::writeData(wb, "Trend Data - HighImpact", allData()$TrendDataHI, startCol = 1, startRow = 1, colNames = TRUE)
+      
+      saveWorkbook(wb, file, overwrite = TRUE)
+    }
+  )
+}
+shinyApp(ui, server)
+# system(paste("bash -c 'cleartool endview parilar1_view'"))
+
+### ------------------------------------------------------------------------ ###
+### CDAM Compliance Dashboard
+### Programmer: Arohi Parlikar
+### ------------------------------------------------------------------------ ###
+
+## Import Libraries ------------------------------------------------------------
+library(data.table)
+library(dplyr)
+library(readxl)
+library(stringr)
+library(tidyr)
+library(tidyverse)
+library(kableExtra)
+library(plotly)
+library(ggplot2)
+library(scales)
+
+### Function Parameter
+# User = 'SONMAPR1'
+# User = 'SAHUVA1'
+# User = 'PARILAR1'
+# User = 'CHOUGPO1'
+
+funcCompliance <- function(User) {
+  User = toupper(User)
+  # Reading Data -----------------------------------------------------------------
+  pathwd = "/funstorage/renv/CDAMWatchtower"
+  BasicDataAll <- data.table(read_excel(paste0(pathwd,"/CDAM_Basic.xlsx"))) %>%
+    mutate(`RAG Value` = toupper(`RAG Value`)) %>%
+    distinct(.keep_all = TRUE)
+  
+  Clusters <- c(
+    "Cluster A (SolidT,IO,Resp)", "Cluster B (CRM,NS,GMA,GH)",
+    "Cluster C (fGSK,Immuno,Sandoz)", "Cluster D (TM,TCO,Coding)",
+    "Cluster E (Ophtha,Haem,Rare,RLT)"
+  )
+  iBoW <- data.table(read_excel(paste0(pathwd,"/CDAM_iBow.xlsx"))) %>%
+    filter(`DM Ops Cluster` %in% Clusters) %>%
+    distinct(.keep_all = TRUE)
+  HCR <- data.table(read_excel(paste0(pathwd,"/CDAM_HCR.xlsx"))) %>%
+    distinct(.keep_all = TRUE)
+  DTS <- data.table(read_excel(paste0(pathwd,"/CDAM_DTS.xlsx"))) %>%
+    mutate(`RAG Value` = toupper(`RAG Value`)) %>%
+    distinct(.keep_all = TRUE)
+  IDR <- data.table(read_excel(paste0(pathwd,"/CDAM_IDR.xlsx"), skip = 7)) %>%
+    mutate(
+      `Number of Applicable Reports` = as.numeric(`Number of Applicable Reports`),
+      `Number of Utilized Reports` = as.numeric(`Number of Utilized Reports`),
+      `% Compliance` = round(as.numeric(`% Compliance`), 2)
+    )
+
+  histFile <- paste0(pathwd,"/uploadHistory.csv")
+  uploadHistory <- data.frame(read.csv(histFile, header = TRUE))
+  
+  CatUnitpair <- data.table(read_excel(paste0(pathwd,"/SolutionsCDAM.xlsx"))) %>%
+    mutate(Status = as.logical(Status)) %>%
+    filter(Status == TRUE)
+
+  # ---------------------------------------------------------------------------- #
+  # Data Handling
+  # The read data needs to be manipulated - calculated columns & structure.
+  # ---------------------------------------------------------------------------- #
+
+  ## Data Table - RawData --------------------------------------------------------
+  ### BasicData_Current
+  BasicData_Current <- BasicDataAll %>% filter(Date == max(Date))
+  CurrentDate <- max(BasicDataAll$Date)
+
+  ### Formatting iBoW & merging with Basic
+  iBoWCol <- colnames(iBoW)
+  if (length(iBoWCol) == 8) {
+    #-------------------- iBoW Export --------------------####
+    iBoWCol <- colnames(iBoW)
+    iBoWCol[iBoWCol == "DM Ops Cluster"] <- "Cluster"
+    iBoWCol[iBoWCol == "DO Ops Unit"] <- "TA"
+    colnames(iBoW) <- iBoWCol
+    iBoW <- iBoW %>% select(c("Trial", "Cluster", "TA", "Phase", "TDM", "PDM", "DM GHs", "DM Sr GHs"))
+
+    RawData1 <- left_join(BasicData_Current, iBoW, by = c("Study" = "Trial")) %>% mutate(`DM Head 521` = "NINANES2")
+  } else {
+    # Not an export, modified iBoW file
+    iBoWCol[iBoWCol == "DM Sr GHs...8"] <- "DM Sr GHs"
+    iBoWCol[iBoWCol == "DM Sr GHs...9"] <- "CDAM Head 521"
+    iBoWCol[iBoWCol == "DM Ops Cluster"] <- "Cluster"
+    iBoWCol[iBoWCol == "DO Ops Unit"] <- "TA"
+    colnames(iBoW) <- iBoWCol
+    subiBoW <- iBoW %>% select(-c(Project, `CDAM Head 521`))
+    RawData1 <- left_join(BasicData_Current, subiBoW, by = c("Study" = "Trial")) %>% mutate(`DM Head 521` = "NINANES2")
+  }
+
+  ### Formatting HCR & merging with RawData
+  subHCR <- HCR %>% select(c(`Novartis 521`, `Associate Name`))
+  RawData <- left_join(RawData1, subHCR, by = c("TDM" = "Associate Name")) %>%
+    rename("TDM 521" = "Novartis 521") %>%
+    left_join(., subHCR, by = c("PDM" = "Associate Name")) %>%
+    rename("PDM 521" = "Novartis 521") %>%
+    left_join(., subHCR, by = c("DM GHs" = "Associate Name")) %>%
+    rename("GH 521" = "Novartis 521") %>%
+    left_join(., subHCR, by = c("DM Sr GHs" = "Associate Name")) %>%
+    rename("Sr GH 521" = "Novartis 521")
+
+  ### Calculate F2
+  RawData <- RawData %>% mutate(
+    F2 = if_else(`TDM 521` == User | `PDM 521` == User | `GH 521` == User | `Sr GH 521` == User | `DM Head 521` == User, 1, 0, missing = F)
+  )
+
+  DMorNot <- sum(RawData$F2)
+
+  ### Data Table - DTS
+  if (!"Cluster" %in% colnames(DTS)) {
+    sub2iBoW <- iBoW %>% select(c("Trial", "Cluster"))
+    DTS <- DTS %>%
+      mutate(across(everything(), as.character)) %>%
+      left_join(., sub2iBoW, by = c("Study" = "Trial"))
+  }
+
+  ## Data Table - HCR ------------------------------------------------------------
+  HCR <- HCR %>% mutate(
+    Manager = if_else(`GH 521` == User, 1, 0, missing = F),
+    Timesheet = if_else(`Novartis 521` %in% NOV521, 1, 0, missing = F)
+  )
+  ManagerOrNot <- sum(HCR$Manager)
+
+  ## Data Table - Study Data -----------------------------------------------------
+  Study <- unique(RawData$Study)
+  Category <- CatUnitpair$Category # c("DOA", "DDPASS", "DTS", "IDR", "UAM", "iBOW", "iQOP", "eSAE", "LEAP", "LPLV-DBL", "Manual Checks", "SSM", "UAT ME")
+  StudyDataAll <- data.table(Study = Study)
+  StudyDataHI <- data.table(Study = Study)
+  subRaw <- RawData %>% select(c(Study, `Report Name`, F2, `RAG Value`, `High Impact`))
+
+  ## 1. Study Data - All (Source: RawData)
+  subRawAll <- subRaw %>%
+    filter(F2 == 1) %>%
+    select(-c(F2, `High Impact`)) %>%
+    pivot_wider(names_from = `Report Name`, values_from = `RAG Value`) %>%
+    distinct() %>%
+    data.table()
+  subRawAll[, Category[!Category %in% colnames(subRawAll)] := NA]
+  StudyDataAll <- StudyDataAll %>%
+    left_join(subRawAll, by = c("Study" = "Study")) %>%
+    mutate_if(is.character, list(~ na_if(., "NA"))) %>%
+    mutate(
+      CountNA = apply(is.na(.), 1, sum),
+      Flag = if_else(CountNA < length(CatUnitpair$Category), 1, 0)
+    ) %>%
+    select(-c(CountNA))
+  StudyDataAll <- StudyDataAll[, lapply(.SD, toupper), .SDcols = names(StudyDataAll)]
+
+  ## 2. Study Data - High Impact Studies (Source: RawData)
+  subRawHI <- subRaw %>%
+    filter(F2 == 1) %>%
+    filter(toupper(`High Impact`) == "YES") %>%
+    select(-c(F2, `High Impact`)) %>%
+    pivot_wider(names_from = `Report Name`, values_from = `RAG Value`) %>%
+    distinct() %>%
+    data.table()
+  subRawHI[, Category[!Category %in% colnames(subRawHI)] := NA]
+  StudyDataHI <- StudyDataHI %>%
+    left_join(subRawHI, by = c("Study" = "Study")) %>%
+    mutate_if(is.character, list(~ na_if(., "NA"))) %>%
+    mutate(
+      CountNA = apply(is.na(.), 1, sum),
+      Flag = if_else(CountNA < length(CatUnitpair$Category), 1, 0)
+    ) %>%
+    select(-c(CountNA))
+  StudyDataHI <- StudyDataHI[, lapply(.SD, toupper), .SDcols = names(StudyDataHI)]
+
+  ## 3. Data Table - Study Data Final
+  # Subset relevant data from IDR and DTS
+  # Study Data - IDR
+  # Regardless of High Impact or not the same IDR color table applies
+  IDR_cutoff <- 0.80
+  subIDR <- IDR %>%
+    select(c(Studies, `High Impact`, `% Compliance`)) %>%
+    mutate_if(is.character, list(~ na_if(., "NA"))) %>%
+    rename(c("Study" = "Studies", "Compliance" = "% Compliance")) %>%
+    mutate(IDR = if_else(Compliance >= IDR_cutoff, "GREEN", "RED")) %>%
+    select(c(Study, IDR))
+
+  # Study Data - DTS
+  subDTS <- DTS %>%
+    select(c(Study, `RAG Value`)) %>%
+    mutate_if(is.character, list(~ na_if(., "NA"))) %>%
+    rename(c("DTS" = "RAG Value")) %>%
+    mutate(DTS = toupper(DTS))
+  if (length(subDTS$Study) == 0) {
+    subDTS$Study <- c(NA)
+    subDTS$DTS <- c(NA)
+  }
+
+  # Merge them with study data where Flag = 1
+  ## These tables to be used to create Study visual
+  StudyDataAll_Final <- StudyDataAll %>%
+    filter(Flag == 1) %>%
+    {
+      tryCatch(left_join(., subIDR, by = c("Study" = "Study")) %>% select(-c(IDR.x)) %>% rename(c("IDR" = "IDR.y")),
+        error = function(e) .
+      )
+    } %>%
+    {
+      tryCatch(left_join(., subDTS, by = c("Study" = "Study")) %>% select(-c(DTS.x)) %>% rename(c("DTS" = "DTS.y")),
+        error = function(e) .
+      )
+    } %>%
+    select(Study, all_of(Category))
+
+  StudyDataHI_Final <- StudyDataHI %>%
+    filter(Flag == 1) %>%
+    {
+      tryCatch(left_join(., subIDR, by = c("Study" = "Study")) %>% select(-c(IDR.x)) %>% rename(c("IDR" = "IDR.y")),
+        error = function(e) .
+      )
+    } %>%
+    {
+      tryCatch(left_join(., subDTS, by = c("Study" = "Study")) %>% select(-c(DTS.x)) %>% rename(c("DTS" = "DTS.y")),
+        error = function(e) .
+      )
+    } %>%
+    select(Study, all_of(Category)) # This is incase DTS data is empty
+
+
+
+  # Summary Page -----------------------------------------------------------------
+  ## Defining the fixed columns ------------------------------------------------
+  Clusters <- c(
+    "Cluster A (SolidT,IO,Resp)", "Cluster B (CRM,NS,GMA,GH)",
+    "Cluster C (fGSK,Immuno,Sandoz)", "Cluster D (TM,TCO,Coding)",
+    "Cluster E (Ophtha,Haem,Rare,RLT)"
+  )
+
+  # Category <- c("DOA", "DDPASS", "DTS", "IDR", "UAM", "iBOW", "iQOP", "eSAE", "LEAP", "LPLV-DBL", "Manual Checks", "SSM", "UAT ME")
+  sameFormulaCat <- CatUnitpair$Category[!(CatUnitpair$Category %in% c("DTS", "IDR"))]
+  # ReportUnit <- c("Q", "M", "Q", "Q", "Q", "M", "Q", "M", "Q", "Q", "M", "M", "Q")
+  # TargetPercent <- c(100, 85, 100, 80, 95, 95, 100, 80, 85, 90, 75, 80, 100)
+  
+  # CatUnitpair <- data.frame(Category = Category, ReportUnit = ReportUnit, TargetPercent = TargetPercent)
+  ## Basic calculations of Summary data ----------------------------------------
+  Summary <- BasicData_Current %>%
+    select(c(`Report Name`, Date)) %>%
+    distinct(.keep_all = TRUE) %>%
+    rename(Category = `Report Name`) %>%
+    right_join(., data.frame(Category = Category), by = c("Category" = "Category")) %>%
+    filter(Category %in% sameFormulaCat) %>%
+    mutate(Date = max(Date, na.rm = TRUE), Date = as.Date(Date)) %>%
+    rbind(., data.table(Category = c("DTS"), Date = c(as.Date(max(uploadHistory$LastModified[uploadHistory$Data == "DTS"]))))) %>%
+    rbind(., data.table(Category = c("IDR"), Date = c(as.Date(max(uploadHistory$LastModified[uploadHistory$Data == "IDR"]))))) %>%
+    left_join(., CatUnitpair, by = c("Category" = "Category")) %>%
+    mutate(
+      ReportPeriod = ifelse(ReportUnit %in% "M",
+        paste(format(Date, "%b"), format(Date, "%y"), sep = "'"),
+        paste(quarters(Date), format(Date, "%y"), sep = "'")
+      )
+    ) %>%
+    # Quarter - 1 as data is uploaded once that quarter is over, same goes for year
+    select(-c(ReportUnit, Date))
+
+  ## Summary Data - All Studies ------------------------------------------------
+  funcSummaryAll <- function() {
+    ApplicableStudies <- RawData %>%
+      select(c(`Report Name`, `High Impact`)) %>%
+      filter(`Report Name` %in% sameFormulaCat) %>%
+      mutate_if(is.character, list(~ na_if(., "N/A"))) %>%
+      mutate(
+        Himp = ifelse(!is.na(`High Impact`), 1, 0)
+      ) %>%
+      group_by(`Report Name`, Himp) %>%
+      tally() %>%
+      data.table() %>%
+      filter(Himp == 1) %>%
+      select(c(`Report Name`, n))
+
+    ApplicableStudies_DTS <- data.table(`Report Name` = "DTS", n = length(DTS$`Report Name`[!is.na(DTS$`Report Name`)]))
+    ApplicableStudies_IDR <- data.table(`Report Name` = "IDR", n = sum(IDR$`Number of Applicable Reports`, na.rm = TRUE))
+
+
+    ApplicableStudies_Final <- rbind(ApplicableStudies, ApplicableStudies_DTS, ApplicableStudies_IDR)
+    colnames(ApplicableStudies_Final) <- c("Report Name", "ApplicableStudies")
+
+    CompliantStudies <- RawData %>%
+      select(c(`Report Name`, `RAG Value`)) %>%
+      filter(`Report Name` %in% sameFormulaCat) %>%
+      mutate_if(is.character, list(~ na_if(., "N/A"))) %>%
+      group_by(`Report Name`, `RAG Value`) %>%
+      tally() %>%
+      data.table() %>%
+      filter(toupper(`RAG Value`) == "GREEN") %>%
+      select(c(`Report Name`, n))
+    CompliantStudies_DTS <- data.table(`Report Name` = "DTS", n = length(DTS$`RAG Value`[toupper(DTS$`RAG Value`) == "GREEN"]))
+    CompliantStudies_IDR <- data.table(`Report Name` = "IDR", n = sum(IDR$`Number of Utilized Reports`, na.rm = TRUE))
+    CompliantStudies_Final <- rbind(CompliantStudies, CompliantStudies_DTS, CompliantStudies_IDR)
+    colnames(CompliantStudies_Final) <- c("Report Name", "CompliantStudies")
+
+    Summary_All <- Summary %>%
+      left_join(ApplicableStudies_Final, by = join_by(Category == `Report Name`)) %>%
+      left_join(CompliantStudies_Final, by = join_by(Category == `Report Name`)) %>%
+      mutate(
+        ApplicableStudies = ifelse(is.na(ApplicableStudies), 0, ApplicableStudies),
+        CompliantStudies = ifelse(is.na(CompliantStudies), 0, CompliantStudies),
+        CompliantPercent = ifelse(ApplicableStudies == 0, NA, round((CompliantStudies / ApplicableStudies) * 100))
+        # TargetPercent = TargetPercent
+      ) %>%
+      select(c(Category, ReportPeriod, ApplicableStudies, CompliantStudies, CompliantPercent, TargetPercent))
+
+    ### Summary - Cluster calculations
+    ### Formula is same for all Category except for DTS, IDR
+    conditionAll <- RawData %>%
+      select(c(`Report Name`, `High Impact`, Cluster)) %>%
+      filter(`Report Name` %in% sameFormulaCat) %>%
+      filter(Cluster %in% Clusters) %>%
+      mutate_if(is.character, list(~ na_if(., "N/A"))) %>%
+      mutate(
+        Himp = ifelse(!is.na(`High Impact`), 1, 0)
+      ) %>%
+      group_by(Cluster, `Report Name`, Himp) %>%
+      tally() %>%
+      filter(Himp == 1) %>%
+      select(c(Cluster, `Report Name`, n)) %>%
+      pivot_wider(names_from = Cluster, values_from = n) %>%
+      full_join(data.table(Category), join_by(`Report Name` == Category)) %>%
+      filter(!`Report Name` %in% c("DTS", "IDR")) %>%
+      pivot_longer(cols = starts_with("Cluster"), names_to = "Cluster", values_to = "n") %>%
+      data.table()
+
+    numeratorAll <- RawData %>%
+      select(c(`Report Name`, `RAG Value`, Cluster)) %>%
+      filter(`Report Name` %in% sameFormulaCat) %>%
+      filter(Cluster %in% Clusters) %>%
+      mutate_if(is.character, list(~ na_if(., "N/A"))) %>%
+      group_by(Cluster, `Report Name`, `RAG Value`) %>%
+      tally() %>%
+      data.table() %>%
+      filter(toupper(`RAG Value`) == "GREEN") %>%
+      select(c(Cluster, `Report Name`, n)) %>%
+      rename(num = n)
+
+    denominatorAll <- RawData %>%
+      select(c(`Report Name`, `RAG Value`, Cluster)) %>%
+      filter(`Report Name` %in% sameFormulaCat) %>%
+      filter(Cluster %in% Clusters) %>%
+      mutate_if(is.character, list(~ na_if(., "N/A"))) %>%
+      filter(!is.na(`RAG Value`)) %>%
+      group_by(Cluster, `Report Name`) %>%
+      tally() %>%
+      data.table() %>%
+      select(c(Cluster, `Report Name`, n)) %>%
+      rename(den = n)
+
+    AllClusters <- full_join(conditionAll, numeratorAll, join_by("Cluster", "Report Name")) %>%
+      full_join(denominatorAll, join_by("Cluster", "Report Name")) %>%
+      mutate(value = ifelse(!is.na(n), round((num / den) * 100), NA)) %>%
+      select(c(`Report Name`, Cluster, value)) %>%
+      pivot_wider(names_from = Cluster, values_from = value) %>%
+      data.table()
+
+    ### Cluster calculation for DTS
+
+    numeratorDTS <- DTS %>%
+      select(c(Cluster, `RAG Value`)) %>%
+      mutate_if(is.character, list(~ na_if(., "N/A"))) %>%
+      group_by(Cluster, `RAG Value`) %>%
+      tally() %>%
+      data.table() %>%
+      filter(toupper(`RAG Value`) == "GREEN") %>%
+      select(c(Cluster, n)) %>%
+      rename(num = n)
+
+    denominatorDTS <- DTS %>%
+      select(c(Cluster)) %>%
+      mutate_if(is.character, list(~ na_if(., "N/A"))) %>%
+      group_by(Cluster) %>%
+      tally() %>%
+      data.table() %>%
+      select(c(Cluster, n)) %>%
+      rename(den = n)
+
+    ClusterDTS <- merge(numeratorDTS, denominatorDTS, by = "Cluster", all = TRUE) %>%
+      mutate(
+        num = ifelse(is.na(num), 0, num),
+        `Report Name` = "DTS",
+        value = ifelse(den != 0, round((num / den) * 100), NA)
+      ) %>%
+      select(c(Cluster, `Report Name`, value)) %>%
+      pivot_wider(names_from = Cluster, values_from = value) %>%
+      data.table()
+
+    ### Cluster calculation for IDR
+    numeratorIDR <- IDR %>%
+      select(c(Cluster, `Number of Utilized Reports`)) %>%
+      mutate_if(is.character, list(~ na_if(., "N/A"))) %>%
+      group_by(Cluster) %>%
+      summarise(num = sum(`Number of Utilized Reports`)) %>%
+      data.table()
+
+    denominatorIDR <- IDR %>%
+      select(c(Cluster, `Number of Applicable Reports`)) %>%
+      mutate_if(is.character, list(~ na_if(., "N/A"))) %>%
+      group_by(Cluster) %>%
+      summarise(den = sum(`Number of Applicable Reports`)) %>%
+      data.table()
+
+    ClusterIDR <- merge(numeratorIDR, denominatorIDR, by = "Cluster", all = TRUE) %>%
+      mutate(
+        num = ifelse(is.na(num), 0, num),
+        `Report Name` = "IDR",
+        value = ifelse(den != 0, round((num / den) * 100), NA)
+      ) %>%
+      select(c(Cluster, `Report Name`, value)) %>%
+      pivot_wider(names_from = Cluster, values_from = value) %>%
+      data.table()
+
+    ClustersData <- rbind(AllClusters, ClusterDTS, ClusterIDR, fill = TRUE)
+
+    SummaryAll <- full_join(Summary_All, ClustersData, join_by(Category == `Report Name`)) %>% 
+      filter(!is.na(CompliantPercent))
+
+    return(SummaryAll)
+  }
+
+  ## Summary Data - High Impact Studies ------------------------------------------
+  funcSummaryHighImpact <- function() {
+    ApplicableStudies <- RawData %>%
+      select(c(`Report Name`, `High Impact`)) %>%
+      filter(`Report Name` %in% sameFormulaCat) %>%
+      mutate_if(is.character, list(~ na_if(., "N/A"))) %>%
+      mutate(
+        Himp = ifelse(`High Impact` == "Yes", 1, 0)
+      ) %>%
+      group_by(`Report Name`, Himp) %>%
+      tally() %>%
+      data.table() %>%
+      filter(Himp == 1) %>%
+      select(c(`Report Name`, n))
+
+
+    ApplicableStudies_DTS <- data.table(`Report Name` = "DTS", n = length(DTS$`Report Name`[!is.na(DTS$`Report Name`)]))
+    ApplicableStudies_IDR <- data.table(`Report Name` = "IDR", n = sum(IDR$`Number of Applicable Reports`, na.rm = TRUE))
+
+
+    ApplicableStudies_Final <- rbind(ApplicableStudies, ApplicableStudies_DTS, ApplicableStudies_IDR)
+    colnames(ApplicableStudies_Final) <- c("Report Name", "ApplicableStudies")
+
+    CompliantStudies <- RawData %>%
+      select(c(`Report Name`, `RAG Value`, `High Impact`)) %>%
+      filter(`Report Name` %in% sameFormulaCat) %>%
+      mutate_if(is.character, list(~ na_if(., "N/A"))) %>%
+      mutate(Himp = ifelse(`High Impact` == "Yes", 1, 0)) %>%
+      group_by(`Report Name`, `RAG Value`, Himp) %>%
+      tally() %>%
+      data.table() %>%
+      filter(toupper(`RAG Value`) == "GREEN" & Himp == 1) %>%
+      select(c(`Report Name`, n))
+    CompliantStudies_DTS <- data.table(`Report Name` = "DTS", n = length(DTS$`RAG Value`[toupper(DTS$`RAG Value`) == "GREEN"]))
+    CompliantStudies_IDR <- data.table(`Report Name` = "IDR", n = sum(IDR$`Number of Utilized Reports`, na.rm = TRUE))
+    CompliantStudies_Final <- rbind(CompliantStudies, CompliantStudies_DTS, CompliantStudies_IDR)
+    colnames(CompliantStudies_Final) <- c("Report Name", "CompliantStudies")
+
+    SummaryHI <- Summary %>%
+      left_join(ApplicableStudies_Final, by = join_by(Category == `Report Name`)) %>%
+      left_join(CompliantStudies_Final, by = join_by(Category == `Report Name`)) %>%
+      mutate(
+        ApplicableStudies = ifelse(is.na(ApplicableStudies), 0, ApplicableStudies),
+        CompliantStudies = ifelse(is.na(CompliantStudies), 0, CompliantStudies),
+        CompliantPercent = ifelse(ApplicableStudies == 0, NA, round((CompliantStudies / ApplicableStudies) * 100))
+        # TargetPercent = TargetPercent
+      ) %>%
+      select(c(Category, ReportPeriod, ApplicableStudies, CompliantStudies, CompliantPercent, TargetPercent))
+
+    ### Summary - Cluster calculations
+    ### Formula is same for all Category except for DTS, IDR
+    conditionAll <- RawData %>%
+      select(c(`Report Name`, `High Impact`, Cluster)) %>%
+      filter(`Report Name` %in% sameFormulaCat) %>%
+      filter(Cluster %in% Clusters) %>%
+      mutate_if(is.character, list(~ na_if(., "N/A"))) %>%
+      mutate(
+        Himp = ifelse(`High Impact` == "Yes", 1, 0)
+      ) %>%
+      group_by(Cluster, `Report Name`, Himp) %>%
+      tally() %>%
+      filter(Himp == 1) %>%
+      select(c(Cluster, `Report Name`, n)) %>%
+      pivot_wider(names_from = Cluster, values_from = n) %>%
+      full_join(data.table(Category), join_by(`Report Name` == Category)) %>%
+      filter(!`Report Name` %in% c("DTS", "IDR")) %>%
+      pivot_longer(cols = starts_with("Cluster"), names_to = "Cluster", values_to = "n") %>%
+      data.table()
+
+    numeratorAll <- RawData %>%
+      select(c(`Report Name`, `RAG Value`, Cluster, `High Impact`)) %>%
+      filter(`Report Name` %in% sameFormulaCat) %>%
+      filter(Cluster %in% Clusters) %>%
+      mutate_if(is.character, list(~ na_if(., "N/A"))) %>%
+      mutate(Himp = ifelse(`High Impact` == "Yes", 1, 0)) %>%
+      group_by(Cluster, `Report Name`, `RAG Value`, Himp) %>%
+      tally() %>%
+      data.table() %>%
+      filter(toupper(`RAG Value`) == "GREEN" & Himp == 1) %>%
+      select(c(Cluster, `Report Name`, n)) %>%
+      rename(num = n)
+
+    denominatorAll <- RawData %>%
+      select(c(`Report Name`, `RAG Value`, Cluster, `High Impact`)) %>%
+      filter(`Report Name` %in% sameFormulaCat) %>%
+      filter(Cluster %in% Clusters) %>%
+      mutate_if(is.character, list(~ na_if(., "N/A"))) %>%
+      mutate(Himp = ifelse(`High Impact` == "Yes", 1, 0)) %>%
+      filter(!is.na(`RAG Value`)) %>%
+      group_by(Cluster, `Report Name`, Himp) %>%
+      tally() %>%
+      data.table() %>%
+      filter(Himp == 1) %>%
+      select(c(Cluster, `Report Name`, n)) %>%
+      rename(den = n)
+
+    AllClusters <- full_join(conditionAll, numeratorAll, join_by("Cluster", "Report Name")) %>%
+      full_join(denominatorAll, join_by("Cluster", "Report Name")) %>%
+      mutate(value = ifelse(!is.na(n), round((num / den) * 100), NA)) %>%
+      select(c(`Report Name`, Cluster, value)) %>%
+      pivot_wider(names_from = Cluster, values_from = value) %>%
+      data.table()
+
+    ### Cluster calculation for DTS
+
+    numeratorDTS <- DTS %>%
+      select(c(Cluster, `RAG Value`)) %>%
+      mutate_if(is.character, list(~ na_if(., "N/A"))) %>%
+      group_by(Cluster, `RAG Value`) %>%
+      tally() %>%
+      data.table() %>%
+      filter(toupper(`RAG Value`) == "GREEN") %>%
+      select(c(Cluster, n)) %>%
+      rename(num = n)
+
+    denominatorDTS <- DTS %>%
+      select(c(Cluster)) %>%
+      mutate_if(is.character, list(~ na_if(., "N/A"))) %>%
+      group_by(Cluster) %>%
+      tally() %>%
+      data.table() %>%
+      select(c(Cluster, n)) %>%
+      rename(den = n)
+
+    ClusterDTS <- merge(numeratorDTS, denominatorDTS, by = "Cluster", all = TRUE) %>%
+      mutate(
+        num = ifelse(is.na(num), 0, num),
+        `Report Name` = "DTS",
+        value = ifelse(den != 0, round((num / den) * 100), NA)
+      ) %>%
+      select(c(Cluster, `Report Name`, value)) %>%
+      pivot_wider(names_from = Cluster, values_from = value) %>%
+      data.table()
+
+    ### Cluster calculation for IDR
+    numeratorIDR <- IDR %>%
+      select(c(Cluster, `Number of Utilized Reports`, `High Impact`)) %>%
+      mutate_if(is.character, list(~ na_if(., "N/A"))) %>%
+      filter(`High Impact` == "Yes") %>%
+      select(-c(`High Impact`)) %>%
+      group_by(Cluster) %>%
+      summarise(num = sum(`Number of Utilized Reports`)) %>%
+      data.table()
+
+    denominatorIDR <- IDR %>%
+      select(c(Cluster, `Number of Applicable Reports`, `High Impact`)) %>%
+      mutate_if(is.character, list(~ na_if(., "N/A"))) %>%
+      filter(`High Impact` == "Yes") %>%
+      select(-c(`High Impact`)) %>%
+      group_by(Cluster) %>%
+      summarise(den = sum(`Number of Applicable Reports`)) %>%
+      data.table()
+
+    ClusterIDR <- merge(numeratorIDR, denominatorIDR, by = "Cluster", all = TRUE) %>%
+      mutate(
+        num = ifelse(is.na(num), 0, num),
+        `Report Name` = "IDR",
+        value = ifelse(den != 0, round((num / den) * 100), NA)
+      ) %>%
+      select(c(Cluster, `Report Name`, value)) %>%
+      pivot_wider(names_from = Cluster, values_from = value) %>%
+      data.table()
+
+    ClustersData <- rbind(AllClusters, ClusterDTS, ClusterIDR, fill = TRUE)
+
+    SummaryHI <- full_join(SummaryHI, ClustersData, join_by(Category == `Report Name`)) %>%
+      filter(!is.na(CompliantPercent))
+    return(SummaryHI)
+  }
+
+  ## Conditional Formatting of the Summary Tables --------------------------------
+  funcSummaryColor <- function(Summary) {
+    SummaryCol <- Summary %>%
+      mutate_at(
+        vars(`Cluster A (SolidT,IO,Resp)`:`Cluster E (Ophtha,Haem,Rare,RLT)`), ~ cell_spec(.x,
+          bold = T,
+          color = "white",
+          background = case_when(
+            .x < TargetPercent ~ "#F46958",
+            .x >= TargetPercent ~ "#2DBBA7",
+            is.na(.x) ~ "transparent"
+          )
+        )
+      ) %>%
+      mutate(
+        CompliantPercent = cell_spec(CompliantPercent, bold = T, color = case_when(
+          CompliantPercent >= TargetPercent ~ "#008282",
+          CompliantPercent < TargetPercent ~ "#89043B",
+          is.na(CompliantPercent) ~ "lightgray"
+        ))
+      ) %>%
+      data.table::transpose(make.names = "Category", keep.names = "Category") %>%
+      mutate(
+        Category = c("Report Period", "Applicable Studies", "Compliant Studies", "Compliance %", "Target %", Clusters)
+      ) %>%
+      remove_rownames() %>%
+      column_to_rownames(var = "Category") %>%
+      kable(escape = FALSE, align = 'c') %>%
+      kable_styling(bootstrap_options = c("hover", "condensed", "responsive"), position = "left", full_width = FALSE) %>%
+      row_spec(0, bold = T, color = "white", background = "#04419B") %>%
+      row_spec(1, background = "#AFEEEE") %>%
+      row_spec(5, background = "#C1C8D2") %>%
+      column_spec(1:nrow(Summary), width_min = "5em")
+    return(SummaryCol)
+  }
+
+  ### Summary All Final
+  SummaryAll <- funcSummaryAll()
+  ColoredSummaryAll <- funcSummaryColor(SummaryAll)
+
+  ### Summary High Impact Final
+  SummaryHI <- funcSummaryHighImpact()
+  ColoredSummaryHI <- funcSummaryColor(SummaryHI)
+
+  ### Plot Data
+  subiBoW2 <- iBoW %>% select(Trial, Cluster, TA, `DM GHs`, `DM Sr GHs`)
+  ToPlot <- left_join(BasicDataAll, subiBoW2, by = c("Study" = "Trial")) %>%
+    select(`Report Name`, `High Impact`, `RAG Value`, Date, Cluster, TA, `DM GHs`, `DM Sr GHs`) %>%
+    mutate(
+      Year = year(Date),
+      Month = paste(toupper(format(Date, "%b")), Year),
+      Quarter = paste(quarters(Date), Year)
+    )
+
+  ## Trend Analysis
+  TrendDataAll <- data.table(read_excel(paste0(pathwd,"/CDAM_TrendData.xlsx"), sheet = "TrendAll")) %>%
+    distinct(.keep_all = TRUE) %>% mutate(Date = as.Date(Date))
+  TrendDataHI <- data.table(read_excel(paste0(pathwd,"/CDAM_TrendData.xlsx"), sheet = "TrendHigh")) %>%
+    distinct(.keep_all = TRUE) %>% mutate(Date = as.Date(Date))
+  MaxDateTrendAll <- max(TrendDataAll$Date)
+  MaxDateTrendHI <- max(TrendDataHI$Date)
+  
+  if(MaxDateTrendAll < CurrentDate){
+    a <- SummaryAll %>% select(-c(ReportPeriod)) %>%
+      pivot_longer(cols = starts_with("Cluster"),names_to = "Cluster",
+                   values_to = "ClusterRAGPercent",
+                   values_drop_na = TRUE) %>% 
+      mutate(Date = as.Date(CurrentDate)) %>% 
+      select(c("Date","Category","ApplicableStudies","CompliantStudies","CompliantPercent","TargetPercent","Cluster","ClusterRAGPercent"))
+    TrendDataAll <- rbind(TrendDataAll, a)
+    
+    b <- SummaryHI %>% select(-c(ReportPeriod)) %>%
+      pivot_longer(cols = starts_with("Cluster"),names_to = "Cluster",
+                   values_to = "ClusterRAGPercent",
+                   values_drop_na = TRUE) %>% 
+      mutate(Date = as.Date(CurrentDate)) %>% 
+      select(c("Date","Category","ApplicableStudies","CompliantStudies","CompliantPercent","TargetPercent","Cluster","ClusterRAGPercent"))
+    TrendDataHI <- rbind(TrendDataHI, b)
+    
+    xlsx::write.xlsx(TrendDataAll, paste0(pathwd,"/CDAM_TrendData.xlsx"), sheetName = "TrendAll", 
+               col.names = TRUE, row.names = FALSE)
+    xlsx::write.xlsx(TrendDataHI, paste0(pathwd,"/CDAM_TrendData.xlsx"), sheetName = "TrendHigh", 
+               col.names = TRUE, row.names = FALSE, append = TRUE)
+  }
+
+  # Study Page -------------------------------------------------------------------
+  # CatUnitpair
+  CatTar <- CatUnitpair %>% select(-c(ReportUnit))
+    # Category <- c(
+    #   "DOA", "DDPASS", "DTS", "IDR", "UAM", "iBOW", "iQOP", "eSAE", "LEAP",
+    #   "LPLV-DBL", "Manual Checks", "SSM", "UAT ME"
+    # )
+    # TargetPercent <- c(100, 85, 100, 80, 95, 95, 100, 80, 85, 90, 75, 80, 100)
+  ## Study Tab - All Data --------------------------------------------------------
+  StudyAll_CountsNA <- colSums(is.na(StudyDataAll_Final))
+  StudyAll_CountsNA <- StudyAll_CountsNA[!names(StudyAll_CountsNA) %in% c("Study")]
+  TotalStudy1 <- rep(nrow(StudyDataAll_Final), length(Category))
+  ApplicableStudies_StudyAll <- TotalStudy1 - StudyAll_CountsNA
+  StudyAll_CountGreen <- colSums(StudyDataAll_Final == "GREEN", na.rm = TRUE)
+  CompliantStudies_StudyAll <- StudyAll_CountGreen[!names(StudyAll_CountGreen) %in% c("Study")]
+  CompliacePerc_StudyAll <- round((CompliantStudies_StudyAll / ApplicableStudies_StudyAll) * 100, 2)
+  CompliacePerc_StudyAll[CompliacePerc_StudyAll == "NaN"] <- NA
+
+  StudyAllIDs <- StudyDataAll_Final$Study
+  StudyAll_Count <- nrow(StudyDataAll_Final)
+
+  ragTitle1 <- paste("RAG Status -", StudyAll_Count, "Studies")
+
+  StudyAllComplete1 <- StudyDataAll_Final %>%
+    remove_rownames() %>%
+    column_to_rownames(var = "Study") %>%
+    mutate_at(
+      vars(1:length(CatUnitpair$Category)), ~ cell_spec(.x,
+        bold = T, color = case_when(.x == "RED" ~ "#F46958", .x == "GREEN" ~ "#2DBBA7", .x == "AMBER" ~ "#FFD22B", is.na(.x) ~ "white"),
+        background = case_when(.x == "RED" ~ "#F46958", .x == "GREEN" ~ "#2DBBA7", .x == "AMBER" ~ "#FFD22B", is.na(.x) ~ "transparent")
+      )
+    )
+  
+  StudyAllComp <- CatTar %>% 
+    left_join(., data.frame(ApplicableStudies_StudyAll = ApplicableStudies_StudyAll, Category = names(ApplicableStudies_StudyAll)), by = 'Category') %>% 
+    left_join(., data.frame(CompliantStudies_StudyAll = CompliantStudies_StudyAll, Category = names(CompliantStudies_StudyAll)), by = 'Category') %>% 
+    left_join(., data.frame(CompliacePerc_StudyAll = CompliacePerc_StudyAll, Category = names(CompliacePerc_StudyAll)), by = 'Category') %>% 
+    select(c("Category","ApplicableStudies_StudyAll","CompliantStudies_StudyAll","CompliacePerc_StudyAll","TargetPercent"))
+  StudyAllComplete <- StudyAllComp %>%
+    mutate(CompliacePerc_StudyAll = cell_spec(CompliacePerc_StudyAll,
+      bold = T,
+      color = case_when(
+        CompliacePerc_StudyAll >= TargetPercent ~ "#008282",
+        CompliacePerc_StudyAll < TargetPercent ~ "#89043B",
+        is.na(CompliacePerc_StudyAll) ~ "lightgray"
+      )
+    )) %>%
+    data.table::transpose(make.names = "Category", keep.names = "Category") %>%
+    mutate(
+      Category = c("Applicable Studies", "Compliant Studies", "Compliance %", "Target %")
+    ) %>%
+    remove_rownames() %>%
+    column_to_rownames(var = "Category") %>%
+    rbind(., StudyAllComplete1) %>%
+    kable(escape = FALSE) %>%
+    kable_styling(bootstrap_options = c("hover", "responsive"), position = "left", full_width = FALSE) %>%
+    row_spec(0, bold = T, color = "white", background = "#04419B") %>%
+    row_spec(4, background = "#C1C8D2")
+  if (DMorNot > 0 & length(StudyDataAll_Final$Study) > 0) {
+    StudyAllComplete <- StudyAllComplete %>%
+      pack_rows(ragTitle1, 5, (4 + StudyAll_Count), label_row_css = "background-color: #7dd1ff; color: #fff;")
+  }
+
+
+  ## Study Tab - High Impact Data ------------------------------------------------
+
+  StudyHI_CountsNA <- colSums(is.na(StudyDataHI_Final))
+  StudyHI_CountsNA <- StudyHI_CountsNA[!names(StudyHI_CountsNA) %in% c("Study")]
+  TotalStudy2 <- rep(nrow(StudyDataHI_Final), length(Category))
+  ApplicableStudies_StudyHI <- TotalStudy2 - StudyHI_CountsNA
+  StudyHI_CountGreen <- colSums(StudyDataHI_Final == "GREEN", na.rm = TRUE)
+  CompliantStudies_StudyHI <- StudyHI_CountGreen[!names(StudyHI_CountGreen) %in% c("Study")]
+  CompliacePerc_StudyHI <- round((CompliantStudies_StudyHI / ApplicableStudies_StudyHI) * 100, 2)
+  CompliacePerc_StudyHI[CompliacePerc_StudyHI == "NaN"] <- NA
+
+  StudyHIIDs <- StudyDataHI_Final$Study
+  StudyHI_Count <- nrow(StudyDataHI_Final)
+
+  ragTitle2 <- paste("RAG Status -", StudyHI_Count, "Studies")
+
+  StudyHIComplete1 <- StudyDataHI_Final %>%
+    remove_rownames() %>%
+    column_to_rownames(var = "Study") %>%
+    mutate_at(
+      vars(1:length(CatUnitpair$Category)), ~ cell_spec(.x,
+        bold = T, color = case_when(.x == "RED" ~ "#F46958", .x == "GREEN" ~ "#2DBBA7", .x == "AMBER" ~ "#FFD22B", is.na(.x) ~ "white"),
+        background = case_when(.x == "RED" ~ "#F46958", .x == "GREEN" ~ "#2DBBA7", .x == "AMBER" ~ "#FFD22B", is.na(.x) ~ "transparent")
+      )
+    )
+  
+  StudyHIComp <- CatTar %>% 
+    left_join(., data.frame(ApplicableStudies_StudyHI = ApplicableStudies_StudyHI, Category = names(ApplicableStudies_StudyHI)), by = 'Category') %>% 
+    left_join(., data.frame(CompliantStudies_StudyHI = CompliantStudies_StudyHI, Category = names(CompliantStudies_StudyHI)), by = 'Category') %>% 
+    left_join(., data.frame(CompliacePerc_StudyHI = CompliacePerc_StudyHI, Category = names(CompliacePerc_StudyHI)), by = 'Category') %>% 
+    select(c("Category","ApplicableStudies_StudyHI","CompliantStudies_StudyHI","CompliacePerc_StudyHI","TargetPercent"))
+  StudyHIComplete <- StudyHIComp %>%
+    mutate(CompliacePerc_StudyHI = cell_spec(CompliacePerc_StudyHI,
+      bold = T,
+      color = case_when(
+        CompliacePerc_StudyHI >= TargetPercent ~ "#008282",
+        CompliacePerc_StudyHI < TargetPercent ~ "#89043B",
+        is.na(CompliacePerc_StudyHI) ~ "lightgray"
+      )
+    )) %>%
+    data.table::transpose(make.names = "Category", keep.names = "Category") %>%
+    mutate(
+      Category = c("Applicable Studies", "Compliant Studies", "Compliance %", "Target %")
+    ) %>%
+    remove_rownames() %>%
+    column_to_rownames(var = "Category") %>%
+    rbind(., StudyHIComplete1) %>%
+    kable(escape = FALSE) %>%
+    kable_styling(bootstrap_options = c("hover", "responsive"), position = "left", full_width = FALSE) %>%
+    row_spec(0, bold = T, color = "white", background = "#04419B") %>%
+    row_spec(4, background = "#C1C8D2")
+  if (DMorNot > 0 & length(StudyDataHI_Final$Study) > 0) {
+    StudyHIComplete <- StudyHIComplete %>%
+      pack_rows(ragTitle2, 5, (4 + StudyHI_Count), label_row_css = "background-color: #7dd1ff; color: #fff;")
+  }
+
+  # Manager Page -----------------------------------------------------------------
+  ## Associate Data --------------------------------------------------------------
+  AssociateData <- HCR %>%
+    filter(`GH 521` == User) %>%
+    mutate(
+      Timesheet_New = if_else(Timesheet > 0, "RED", "GREEN"),
+      Training_New = if_else(length(Timesheet) > 3, NA, "")
+    ) %>%
+    select(c(`Associate Name`, Timesheet_New, Training_New))
+  AssociateDataCount = nrow(AssociateData)
+
+  AssocCountTmst <- length(AssociateData$`Associate Name`)
+  ComplAssocTmst <- ifelse(AssocCountTmst == 0, NA, length(AssociateData$Timesheet_New[AssociateData$Timesheet_New == "GREEN"]))
+
+  AssocCountTrain <- sum(!is.na(AssociateData$Training_New))
+  ComplAssocTrain <- ifelse(AssocCountTrain == 0, NA, AssociateData %>% filter(!is.na(Training_New) & Training_New >= 100) %>% nrow())
+  
+  # Plot View
+  AssociateDataPlot <- AssociateData %>% rename(c("Timesheet"="Timesheet_New","Training"="Training_New"))
+  # if (nrow(AssociateData) >0){
+  #   AssociateDataPlot <- AssociateData %>% rename(c("Timesheet"="Timesheet_New","Training"="Training_New")) %>%
+  #     mutate(
+  #       TimesheetCompliance = case_when(Timesheet == 'GREEN' ~ 'Compliant',
+  #                                       Timesheet == 'RED' ~ 'Non-Compliant',
+  #                                       is.na(Timesheet) ~ NA),
+  #       TrainingCompliance = case_when(Training == 'GREEN' ~ 'Compliant',
+  #                                      Training == 'RED' ~ 'Non-Compliant',
+  #                                      is.na(Training) ~ NA),
+  #       TimeColor = case_when(Timesheet == 'GREEN' ~ "#2DBBA7", Timesheet == 'RED' ~ "#F46958", is.na(Timesheet) ~ "white"),
+  #       TrainColor = case_when(Training == 'GREEN' ~ "#2DBBA7", Training == 'RED' ~ "#F46958", is.na(Training) ~ "white"),
+  #       Timesheet_New = Timesheet,
+  #       Training_New = Training,
+  #       Timesheet_New = cell_spec(Timesheet_New,
+  #                                 bold = T, color = case_when(Timesheet_New == "RED" ~ "#F46958", Timesheet_New == "GREEN" ~ "#2DBBA7", Timesheet_New == "AMBER" ~ "#FFD22B", is.na(Timesheet_New) ~ "white"),
+  #                                 background = case_when(Timesheet_New == "RED" ~ "#F46958", Timesheet_New == "GREEN" ~ "#2DBBA7", Timesheet_New == "AMBER" ~ "#FFD22B", is.na(Timesheet_New) ~ "transparent")
+  #       ),
+  #       Training_New = cell_spec(Training_New,
+  #                                bold = T, color = case_when(Training_New < 100 ~ "#F46958", Training_New >= "GREEN" ~ "#2DBBA7", is.na(Training_New) ~ "white"),
+  #                                background = case_when(Training_New < 100 ~ "#F46958", Training_New >= 100 ~ "#2DBBA7", is.na(Training_New) ~ "transparent")
+  #       )
+  #     )
+  # }
+  
+  # Table View
+  AssociateData <- AssociateData %>%
+    mutate(
+      Timesheet_New = cell_spec(Timesheet_New,
+        bold = T, color = case_when(Timesheet_New == "RED" ~ "#F46958", Timesheet_New == "GREEN" ~ "#2DBBA7", Timesheet_New == "AMBER" ~ "#FFD22B", is.na(Timesheet_New) ~ "white"),
+        background = case_when(Timesheet_New == "RED" ~ "#F46958", Timesheet_New == "GREEN" ~ "#2DBBA7", Timesheet_New == "AMBER" ~ "#FFD22B", is.na(Timesheet_New) ~ "transparent")
+      ),
+      Training_New = cell_spec(Training_New,
+        bold = T, color = case_when(Training_New < 100 ~ "#F46958", Training_New >= "GREEN" ~ "#2DBBA7", is.na(Training_New) ~ "white"),
+        background = case_when(Training_New < 100 ~ "#F46958", Training_New >= 100 ~ "#2DBBA7", is.na(Training_New) ~ "transparent")
+      )
+    ) %>%
+    remove_rownames() %>%
+    column_to_rownames(var = "Associate Name")
+  colnames(AssociateData) <- c("Timesheet", "Training")
+
+  ## Manager Data ----------------------------------------------------------------
+  ManagerData <- data.table(Category = c("Timesheet", "Training"), Associates = c(AssocCountTmst, AssocCountTrain), CompliantAssociates = c(ComplAssocTmst, ComplAssocTrain)) %>%
+    mutate(
+      CompliancePer = round((CompliantAssociates / Associates) * 100, 2),
+      TargetPer = 100,
+      CompliancePer = cell_spec(CompliancePer,
+        bold = T,
+        color = case_when(
+          CompliancePer >= TargetPer ~ "#008282",
+          CompliancePer < TargetPer ~ "#89043B",
+          is.na(CompliancePer) ~ "lightgray"
+        )
+      )
+    ) %>%
+    data.table::transpose(make.names = "Category", keep.names = "Category") %>%
+    mutate(
+      Category = c("Associate #", "Compliant Associates", "Compliance %", "Target %")
+    ) %>%
+    remove_rownames() %>%
+    column_to_rownames(var = "Category") %>%
+    rbind(., AssociateData) %>%
+    kable(escape = FALSE) %>%
+    kable_styling(bootstrap_options = c("hover", "responsive"), position = "left", full_width = FALSE) %>%
+    row_spec(0, bold = T, color = "white", background = "#04419B") %>%
+    row_spec(4, background = "#C1C8D2")
+  
+  # Returning data to the app script ------------------------------------------#
+  allData <- list(
+    ToPlot = ToPlot,
+    ColoredSummaryAll = ColoredSummaryAll,
+    ColoredSummaryHI = ColoredSummaryHI,
+    StudyAllComplete = StudyAllComplete,
+    StudyHIComplete = StudyHIComplete,
+    ManagerData = ManagerData,
+    BasicDataAll = BasicDataAll,
+    TrendDataAll = TrendDataAll,
+    TrendDataHI = TrendDataHI,
+    StudyAllComp = StudyAllComp,
+    StudyHIComp = StudyHIComp,
+    StudyDataAll_Final = StudyDataAll_Final,
+    StudyDataHI_Final = StudyDataHI_Final,
+    AssociateDataPlot = AssociateDataPlot,
+    AssociateDataCount = AssociateDataCount,
+    DTS = DTS,
+    HCR = HCR,
+    IDR = IDR,
+    iBoW = iBoW,
+    expectedReports = CatUnitpair$Category
+  )
+  return(allData)
+}
